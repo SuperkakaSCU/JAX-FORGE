@@ -43,8 +43,7 @@ except ImportError:
     pass
 
 petsc_row_elim = True  # If True, use PETSc for row elimination, otherwise use JAX
-# print(jax.devices())
-# print(cp.cuda.Device(0).mem_info)
+
 ################################################################################
 # JAX solver or scipy solver or PETSc solver
 

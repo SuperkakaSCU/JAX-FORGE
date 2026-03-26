@@ -1006,7 +1006,7 @@ class AutomaticTimeStepperTM:
                             self.problem.fes[0],
                             self.sol_u,
                             vtk_path,
-                            point_infos=[("Displacement", self.sol_u), ("Temperature", self.sol_dT)],
+                            point_infos=[("Displacement", self.sol_u), ("Temperature (°C)", self.sol_dT)],
                             
                         )
                         print(f"  Saved: {vtk_path}")

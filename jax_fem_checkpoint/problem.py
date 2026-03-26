@@ -339,7 +339,7 @@ class Problem:
         """Volume integral in weak form
         """
         vmap_fn = self.kernel_jac if jac_flag else self.kernel
-        num_cuts = 400
+        num_cuts = 20
         if num_cuts > self.num_cells:
             num_cuts = self.num_cells
         batch_size = self.num_cells // num_cuts
