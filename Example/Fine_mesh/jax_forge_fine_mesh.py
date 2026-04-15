@@ -12,6 +12,15 @@
 ## Version 5.1: Definition of IC of temperature field
 ## Version 5.2: Add refine mesh function and test with a refined mesh. (work for jax_forge_test) (num_cuts matters)
 
+## Version 6: Fix multi-hit displacement continuity
+## Problem: Dirichlet BCs are applied as absolute values (sol.set). When Hit 2 starts,
+##   scale ramps from 0, forcing contact node displacements to ~0 regardless of Hit 1
+##   residual displacement. This causes an unphysical jump and divergence in the return map.
+## Fix: For hit_idx > 0, the prescribed displacement now ramps from the Hit 1 residual
+##   displacement to the Hit 2 target:
+##     u_prescribed = u_residual + scale * (u_target - u_residual)
+##   When scale=0: u = u_residual (no jump). When scale=1: u = u_target.
+
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
@@ -112,7 +121,7 @@ class ThermalMechanical(Problem):
         
 
         ### Hu: Refernce -- https://www.spacematdb.com/spacemat/manudatasheets/15-5_PH_Data_Sheet.pdf
-        rho = 7800e-12 / (self.S**3) # density, 7800 kg/m^3 --> tone/mm^3
+        rho = 7800e-12 / (self.S**3) # density, 7800 kg/m^3 --> tonne/mm^3
         
         self.alpha_expansion = 13.5e-6
         self.mu = self.E / (2.0 * (1.0 + self.nu))
@@ -127,8 +136,8 @@ class ThermalMechanical(Problem):
 
         ## Assumption of 900K
         
-        self.C = 600.e6 * rho  # specific heat per unit volume at constant strain, 420J/kg-K --> mJ/tone-K
-        self.k = 25.0 / self.S # thermal conductivity, 17.8 W/m-K -->  mW/mm-K
+        self.C = 600.e6 * rho  # specific heat per unit volume at constant strain, 600J/kg-K --> mJ/tonne-K
+        self.k = 25.0 / self.S # thermal conductivity, 25.0 W/m-K -->  mW/mm-K
 
         self.dt = 0.1 # secs
 
@@ -273,7 +282,7 @@ class ThermalMechanical(Problem):
                 return sigma
 
             def compute_lagrangian_strain(u_grad):
-                """Compute Green-Lagrange strain E = 0.5(F^T F - I)"""
+                """Compute Euler-Almansi-like strain e = 0.5(F F^T - I)"""
                 F = u_grad + np.eye(self.dim)
                 strain = 0.5 * (F @ F.T - np.eye(self.dim))
                 return strain
@@ -459,13 +468,13 @@ class ThermalMechanical(Problem):
 
 
     def get_cauchy_stress_map(self):
-        """Get Cauchy stress map for future tau"""
+        """Get Cauchy stress map"""
         _, _, cauchy_return_map, _, _ = self.get_maps()
         return cauchy_return_map
 
 
     def get_detla_gamma_map(self):
-        '''Get detal_gammp map for D_mech'''
+        '''Get delta_gamma map for D_mech'''
         _, _, _, _, detla_gamma_map = self.get_maps()
         return detla_gamma_map
 
@@ -514,7 +523,7 @@ class ThermalMechanical(Problem):
 
 
         def compute_lagrangian_strain(u_grad):
-            """Compute Green-Lagrange strain E = 0.5(F^T F - I)"""
+            """Compute Euler-Almansi-like strain e = 0.5(F F^T - I)"""
             F = u_grad + np.eye(self.dim)
             strain = 0.5 * (F @ F.T - np.eye(self.dim))
             return strain
@@ -561,7 +570,7 @@ class ThermalMechanical(Problem):
 
             ## Hu: (None, num_nodes, vec, None) * (num_quads, num_nodes, None, dim)
             u_grads_center = cell_sol_u[None, :, :, None] * shape_grads_center[:, :, None, :]
-            u_grads_center = np.sum(u_grads_center, axis=1)  ## Hu: (num_quads, 1, vec, dim)
+            u_grads_center = np.sum(u_grads_center, axis=1)  ## Hu: (num_quads, vec, dim)
             u_grads_center_reshape = u_grads_center.reshape(-1, self.fe_u.vec, self.dim)  # Hu: (num_quads, vec, dim)
 
             cell_internal_vars_updated = (a1, a2, a3, a4, u_grads_center_reshape, a6, T_old, dt)
@@ -618,8 +627,7 @@ class ThermalMechanical(Problem):
             val2 = self.Chi * np.sum(tmp2[:, None, None] * self.fe_T.shape_vals[:, :, None] * cell_JxW_T[:, None, None], axis=0)
 
 
-            # Handles the term 'kappa * T0 * tr((epsilon_crt-epsilon_old)/dt) * Q * dx'
-            # Handles the term 'k * inner(grad(T_crt),grad(Q)) * dx'
+            # Handles the term 'k * inner(grad(T_crt),grad(Q)) * dx'  (heat diffusion)
             # (1, num_nodes, vec, 1) * (num_quads, num_nodes, 1, dim) 
             # -> (num_quads, num_nodes, vec, dim)
             # -> (num_quads, vec, dim)
@@ -644,7 +652,7 @@ class ThermalMechanical(Problem):
         ## Hu: surface_map(u, x, *cell_internal_vars_surface)
 
         def thermal_neumann(T, old_T_face):
-            h = 10.0 # heat convection coefficien 1.0e4 W/m^2-K --> 10.0 mW/mm^2-K
+            h = 10.0 # heat convection coefficient 1.0e4 W/m^2-K --> 10.0 mW/mm^2-K
             # h = 0.0
             T0 = 25. # room Temp.
             # q_contact = h*(T0 - old_T_face[0])
@@ -661,7 +669,7 @@ class ThermalMechanical(Problem):
             # face_shape_vals: (num_face_quads, num_nodes + ...)
             # face_shape_grads: (num_face_quads, num_nodes + ..., dim)
             # face_nanson_scale: (num_vars, num_face_quads)
-            ## Hu: old_T_top -- (num_face_quads, vec)
+            ## Hu: old_T_left -- (num_face_quads, vec)
             
             cell_sol_list = self.unflatten_fn_dof(cell_sol_flat)
             cell_sol_T = cell_sol_list[1]
@@ -1133,7 +1141,27 @@ def build_cylinder_press_bcs(mesh, R, H, hit, current_sol_u=None, T_linear_fn=No
     else:
         pts_for_selection = pts  # Initial coordinates
         print(f"  [BC] Using initial coordinates")
-    
+
+    # ===== Build residual displacement lookup for multi-hit continuity =====
+    # When current_sol_u is provided (hit_idx > 0), we need to know the residual
+    # displacement at each reference node so that the Dirichlet BC can ramp from
+    # the residual value (no jump) to the new target value.
+    # NOTE: The lookup must use pure JAX operations (no scipy/numpy calls) because
+    # it is invoked inside jax.vmap where `p` is a JAX tracer, not a concrete array.
+    if current_sol_u is not None:
+        _pts_jax = np.array(pts)                      # (num_nodes, 3) — JAX array
+        _residual_u_jax = np.array(current_sol_u)     # (num_nodes, 3) — JAX array
+        def residual_u(p):
+            """Look up Hit (N-1) residual displacement for reference point p.
+            Pure-JAX implementation: finds nearest reference node via argmin."""
+            dists_sq = np.sum((_pts_jax - p[None, :]) ** 2, axis=1)
+            idx = np.argmin(dists_sq)
+            return _residual_u_jax[idx]
+        print(f"  [BC] Residual displacement lookup built (max |u_res| = {onp.max(onp.abs(onp.array(current_sol_u))):.6e})")
+    else:
+        def residual_u(p):
+            return np.zeros(3)
+
     # ===== Handle rotation =====
     # Convert Euler angles to quaternion
     rot_obj = Rotation.from_euler("x", hit.rotation_euler_x, degrees=True)
@@ -1298,20 +1326,23 @@ def build_cylinder_press_bcs(mesh, R, H, hit, current_sol_u=None, T_linear_fn=No
         """
         Update Dirichlet BCs for mechanical problem.
 
-        Single-hit assumption: rotation is static (computed once at BC creation),
-        so we use the precomputed `left_disp_vec` and `right_disp_vec`.
+        Multi-hit continuity: for hit_idx > 0 the prescribed displacement ramps
+        from the previous hit's residual displacement to the current hit's target:
+            u = u_residual + scale * (u_target - u_residual)
+        When current_sol_u is None (first hit), residual_u returns zeros and this
+        reduces to the original  u = scale * u_target.
         """
         # Build per-component value functions (matches expanded vecs/location_fns)
         new_value_fns = [
             zero_val,
             zero_val,
             zero_val,
-            (lambda p, idx=0: scale * left_disp_vec(p)[idx]),
-            (lambda p, idx=1: scale * left_disp_vec(p)[idx]),
-            (lambda p, idx=2: scale * left_disp_vec(p)[idx]),
-            (lambda p, idx=0: scale * right_disp_vec(p)[idx]),
-            (lambda p, idx=1: scale * right_disp_vec(p)[idx]),
-            (lambda p, idx=2: scale * right_disp_vec(p)[idx]),
+            (lambda p, idx=0: residual_u(p)[idx] + scale * (left_disp_vec(p)[idx] - residual_u(p)[idx])),
+            (lambda p, idx=1: residual_u(p)[idx] + scale * (left_disp_vec(p)[idx] - residual_u(p)[idx])),
+            (lambda p, idx=2: residual_u(p)[idx] + scale * (left_disp_vec(p)[idx] - residual_u(p)[idx])),
+            (lambda p, idx=0: residual_u(p)[idx] + scale * (right_disp_vec(p)[idx] - residual_u(p)[idx])),
+            (lambda p, idx=1: residual_u(p)[idx] + scale * (right_disp_vec(p)[idx] - residual_u(p)[idx])),
+            (lambda p, idx=2: residual_u(p)[idx] + scale * (right_disp_vec(p)[idx] - residual_u(p)[idx])),
         ]
         problem.fes[0].update_Dirichlet_boundary_conditions([location_fns_u, vecs, new_value_fns])
 
@@ -1409,9 +1440,8 @@ def refresh_problem_surface_integrals(problem):
 def run_thermo_mech_cylinder_press_two_hits():
     """
     Run a two-hit forging simulation:
-    - Hit 1 at position x_band=[0.2, 0.4]*H with rotation
+    - Hit 1 at position x_band=[0.5, 0.7]*H, no rotation
     - Cool to initial temperature profile
-    - Hit 2 at position x_band=[0.5, 0.7]*H with different rotation
     
     Key: F and alpha (plasticity history) carried forward; T reset; displacement resets each hit.
     """
@@ -1523,34 +1553,34 @@ def run_thermo_mech_cylinder_press_two_hits():
         xc = np.clip(x, x_min, x_top)
         return T_bot + (T_top - T_bot) * ((xc - x_min) / (x_top - x_min))
 
-    # === Define the two hits ===
+    # === Define the three hits ===
     # 7.4 sec ~ 8.2 sec from experiment
     hit_1 = Hit(
-        x_min_band=0.5,  # 20% of H
-        x_max_band=0.7,  # 40% of H (band width = 0.2*H = 10mm for typical H=100mm forging)
+        x_min_band=0.5,  # 50% of H
+        x_max_band=0.7,  # 70% of H (band width = 0.2*H)
         compression_displacement=1.63,
         rotation_euler_x=0.0,
         total_time=0.8,   # duration for hit 1 (seconds)
     )
     
     hit_2 = Hit(
-        x_min_band=0.65,  # 50% of H
-        x_max_band=0.85,  # 70% of H (overlaps with first hit region)
+        x_min_band=0.65,  # 65% of H
+        x_max_band=0.85,  # 85% of H (overlaps with first hit region)
         compression_displacement=1.63,
         rotation_euler_x=-15.0,  # Opposite rotation
         total_time=0.8,   # shorter hit
     )
 
     hit_3 = Hit(
-        x_min_band=0.55,  # 50% of H
-        x_max_band=0.75,  # 70% of H (overlaps with first hit region)
+        x_min_band=0.55,  # 55% of H
+        x_max_band=0.75,  # 75% of H (overlaps with first hit region)
         compression_displacement=1.83,
         rotation_euler_x=30.0,  # Opposite rotation
         total_time=1.2,   # longer final hit
     )
 
-    # hits = [hit_1, hit_2, hit_3]
-    hits = [hit_1]
+    hits = [hit_1, hit_2, hit_3]
+    # hits = [hit_1]
 
     # === Build initial problem (single mesh, shared across all hits) ===
     pts = onp.array(mesh.points)

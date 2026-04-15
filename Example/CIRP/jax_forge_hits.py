@@ -11,8 +11,17 @@
 
 ## Version 5.1: Definition of IC of temperature field
 
+## Version 6: Fix multi-hit displacement continuity
+## Problem: Dirichlet BCs are applied as absolute values (sol.set). When Hit 2 starts,
+##   scale ramps from 0, forcing contact node displacements to ~0 regardless of Hit 1
+##   residual displacement. This causes an unphysical jump and divergence in the return map.
+## Fix: For hit_idx > 0, the prescribed displacement now ramps from the Hit 1 residual
+##   displacement to the Hit 2 target:
+##     u_prescribed = u_residual + scale * (u_target - u_residual)
+##   When scale=0: u = u_residual (no jump). When scale=1: u = u_target.
+
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 try:
     import open3d as o3d
@@ -105,15 +114,13 @@ class ThermalMechanical(Problem):
         self.sig0 = 1172. / (self.S**2)
         self.nu = 0.272
         
-
         ### Hu: Refernce -- https://www.spacematdb.com/spacemat/manudatasheets/15-5_PH_Data_Sheet.pdf
-        rho = 7800e-12 / (self.S**3) # density, 7800 kg/m^3 --> tone/mm^3
+        rho = 7800e-12 / (self.S**3) # density, 7800 kg/m^3 --> tonne/mm^3
         
         self.alpha_expansion = 13.5e-6
         self.mu = self.E / (2.0 * (1.0 + self.nu))
         self.lmbda = self.E * self.nu / ((1 + self.nu) * (1 - 2 * self.nu))
         self.kappa = self.alpha_expansion * (2 * self.mu + 3 * self.lmbda)
-
 
         ### Hu: Reference -- https://asm.matweb.com/search/SpecificMaterial.asp?bassnum=MQM15AF
         # self.C = 420.e6 * rho  # specific heat per unit volume at constant strain, 420J/kg-K --> mJ/tone-K
@@ -122,11 +129,10 @@ class ThermalMechanical(Problem):
 
         ## Assumption of 900K
         
-        self.C = 600.e6 * rho  # specific heat per unit volume at constant strain, 420J/kg-K --> mJ/tone-K
-        self.k = 25.0 / self.S # thermal conductivity, 17.8 W/m-K -->  mW/mm-K
+        self.C = 600.e6 * rho  # specific heat per unit volume at constant strain, 600J/kg-K --> mJ/tonne-K
+        self.k = 25.0 / self.S # thermal conductivity, 25.0 W/m-K -->  mW/mm-K
 
         self.dt = 0.1 # secs
-
 
         self.Chi = 0.85
         self.Q = 145./ (self.S**2)     # Hardening saturation MPa
@@ -162,7 +168,6 @@ class ThermalMechanical(Problem):
 
         # [-2]: dT_old
         # [-1]: dt
-
         self.internal_vars = [self.F_old, self.Be_old, self.alpha_old, self.shape_grads_center, 
                              self.ugrad_center, self.thetas, np.zeros((len(self.fe_T.cells), self.fe_T.num_quads)),
                              self.dt * np.ones((self.fe_T.num_cells, self.fe_T.num_quads))]
@@ -182,16 +187,9 @@ class ThermalMechanical(Problem):
 
         self.scale = scale
         a1, a2, a3, a4, a5, a6, a7, a8 = int_vars
-        # p_mag = self.pressure_mag * np.ones((len(self.boundary_inds_list[0]), self.fes[0].num_face_quads))
 
         ### Hu: TODO: This unnecessary right now
-        # scales = scale * np.ones((len(self.boundary_inds_list[0]), self.fes[0].num_face_quads))
         scales = scale * onp.ones((len(self.fes[0].cells), self.fes[0].num_quads))
-
-        # self.update_nanson_scale(sol)
-        # sol_quad_surface = self.fes[0].convert_from_dof_to_face_quad(sol, self.boundary_inds_list[0])
-        # norm_quad_surface = self.fes[0].get_physical_surface_norm(sol_quad_surface, self.boundary_inds_list[0])
-        # self.internal_vars_surfaces = [[scales, norm_quad_surface]]
 
         full_params = np.ones((self.fe_u.num_cells, len(rho_ini)))
         full_params = full_params.at[self.fe_u.flex_inds].set(rho_ini)
@@ -213,7 +211,6 @@ class ThermalMechanical(Problem):
 
     
 
-
     def get_maps(self):
         """Define constitutive model and post-processing functions"""
         def modulus_temp(T):
@@ -230,28 +227,16 @@ class ThermalMechanical(Problem):
             J2 plasticity with nonlinear isotropic hardening
             F-bar method for volumetric locking prevention
             """
-            ### Hu: Change it to temperature-dependent
-            
-            # Material parameters
-            # E = 100.e3   # Young's modulus
-            # sig0 = 100.0 # Initial yield stress
-            # K = E / (3. * (1. - 2. * self.nu))  # Bulk modulus
-            # G = E / (2. * (1. + self.nu))      # Shear modulus
-            
             # Temperature-dependent Material parameters
             K = modulus_temp(T_old) / (3. * (1. - 2. * self.nu))
             G = modulus_temp(T_old) / (2. * (1. + self.nu))      # Shear modulus
             sig0 = yield_stress_temp(T_old)
 
-            # print("F_old", F_old.shape)  # (3, 3)
-            # print("K", K.shape) # ()
-            
 
             def first_PK_stress(u_grad):
                 """Compute first Piola-Kirchhoff stress P = τ F^{-T}"""
                 F, _, _, tau, _, _ = return_map(u_grad)
-                
-                ### P -- first PK stress; tau -- Kirchhoff stress
+                # P -- first PK stress; tau -- Kirchhoff stress
                 P = tau @ np.linalg.inv(F).T
                 return P
 
@@ -268,7 +253,7 @@ class ThermalMechanical(Problem):
                 return sigma
 
             def compute_lagrangian_strain(u_grad):
-                """Compute Green-Lagrange strain E = 0.5(F^T F - I)"""
+                """Compute Euler-Almansi-like strain e = 0.5(F F^T - I)"""
                 F = u_grad + np.eye(self.dim)
                 strain = 0.5 * (F @ F.T - np.eye(self.dim))
                 return strain
@@ -277,21 +262,14 @@ class ThermalMechanical(Problem):
                 _, _, _, _, _, Delta_gamma_final = return_map(u_grad)
                 return Delta_gamma_final
 
-
-            # def get_tau(F, be_bar):
             def get_tau(F, be_bar, T_old):
                 """Compute Kirchhoff stress from elastic left Cauchy-Green"""
                 J = np.linalg.det(F)
                 ## Hu: Eq. (70) & Eq. (71)
-                # tau = 0.5 * K * (J**2 - 1.) * np.eye(self.dim) + G * deviatoric(be_bar)
-
                 p = 0.5 * K * (J**2 - 1.)/J
                 s = G * deviatoric(be_bar)
-
                 beta = modulus_temp(T_old)/(1.0 - 2.0*self.nu)*self.alpha_expansion
-
                 tau = J*(p - beta*(T_old-self.T0))*np.eye(self.dim) + s
-
 
                 return tau
 
@@ -320,22 +298,17 @@ class ThermalMechanical(Problem):
                 F-bar method for near-incompressibility
                 """
                 # Modified deformation gradient (F-bar method)
-                ### Hu: Eq. (9) -- be: elastic part of left Cauchy-Green tensors
+                # Hu: Eq. (9) -- be: elastic part of left Cauchy-Green tensors
                 be_bar_old = (np.linalg.det(F_old)**(-2. / 3.)) * be_old
-
 
                 Fact = u_grad + np.eye(self.dim)
                 F0 = ugrad0 + np.eye(self.dim)
-
-                
                 F = ((np.linalg.det(F0) / np.linalg.det(Fact))**(1. / 3.)) * Fact
-
 
                 ### Hu: Eq. (9.3.5) -- f: relative deformation gradient
                 ### Hu: Eq. (9.3.5) -- f_bar: volume-preserving deformation gradient
                 F_old_inv = np.linalg.inv(F_old)
                 f = F @ F_old_inv   # Incremental deformation gradient
-                
                 
                 # Elastic predictor (9.3.14)
                 f_bar = (np.linalg.det(f)**(-1. / 3.)) * f    # Eq. (68)
@@ -345,7 +318,6 @@ class ThermalMechanical(Problem):
                 Ie_bar = (1. / 3.) * np.trace(be_bar_trial)
                 G_bar = Ie_bar * G
                 
-
                 # Check yield condition
                 # Eq. (73)
                 yield_f_trial = np.linalg.norm(s_trial) - np.sqrt(2. / 3.) * (sig0 + K_fun(alpha_old, T_old))
@@ -359,9 +331,7 @@ class ThermalMechanical(Problem):
                 alpha = alpha_old + np.sqrt(2. / 3.) * Delta_gamma
                 be_bar = (s / G) + Ie_bar * np.eye(self.dim)   # Eq. (9.3.33)
                 
-                # tau = get_tau(F, be_bar)
                 tau = get_tau(F, be_bar, T_old)
-
                 be_updated = be_bar * (np.linalg.det(F)**(2. / 3.))
                 
                 return F, be_updated, alpha, tau, ugrad0, Delta_gamma
@@ -401,8 +371,6 @@ class ThermalMechanical(Problem):
                 init_d_gamma = 0.0
                 carry_init = (init_d_gamma, False)
 
-                ## Hu: lax.scan(f, init, xs, length=None)
-                ## Hu: f(carry, x) → (carry_new, y)
                 # Fixed-point iteration using scan
                 (d_gamma_final, _), _ = jax.lax.scan(body_fun, carry_init, None, length=max_iters)
 
@@ -454,13 +422,13 @@ class ThermalMechanical(Problem):
 
 
     def get_cauchy_stress_map(self):
-        """Get Cauchy stress map for future tau"""
+        """Get Cauchy stress map"""
         _, _, cauchy_return_map, _, _ = self.get_maps()
         return cauchy_return_map
 
 
     def get_detla_gamma_map(self):
-        '''Get detal_gammp map for D_mech'''
+        '''Get delta_gamma map for D_mech'''
         _, _, _, _, detla_gamma_map = self.get_maps()
         return detla_gamma_map
 
@@ -509,7 +477,7 @@ class ThermalMechanical(Problem):
 
 
         def compute_lagrangian_strain(u_grad):
-            """Compute Green-Lagrange strain E = 0.5(F^T F - I)"""
+            """Compute Euler-Almansi-like strain e = 0.5(F F^T - I)"""
             F = u_grad + np.eye(self.dim)
             strain = 0.5 * (F @ F.T - np.eye(self.dim))
             return strain
@@ -538,8 +506,6 @@ class ThermalMechanical(Problem):
             a1, a2, a3, a4, a5, a6, T_old, dt = cell_internal_vars
             shape_grads_center = a4
 
-            # print("a1: {0}, a2: {1}, a3:{2}, a4:{3}, a5:{4}, a6:{5}, T_old:{6}, dt:{7}".format(a1.shape, a2.shape, a3.shape, a4.shape, a5.shape, a6.shape, T_old.shape, dt.shape))
-
             # Split
             cell_sol_list = self.unflatten_fn_dof(cell_sol_flat)
             cell_sol_u, cell_sol_T = cell_sol_list
@@ -556,22 +522,19 @@ class ThermalMechanical(Problem):
 
             ## Hu: (None, num_nodes, vec, None) * (num_quads, num_nodes, None, dim)
             u_grads_center = cell_sol_u[None, :, :, None] * shape_grads_center[:, :, None, :]
-            u_grads_center = np.sum(u_grads_center, axis=1)  ## Hu: (num_quads, 1, vec, dim)
+            u_grads_center = np.sum(u_grads_center, axis=1)  ## Hu: (num_quads, vec, dim)
             u_grads_center_reshape = u_grads_center.reshape(-1, self.fe_u.vec, self.dim)  # Hu: (num_quads, vec, dim)
 
             cell_internal_vars_updated = (a1, a2, a3, a4, u_grads_center_reshape, a6, T_old, dt)
 
-
             # Handles the term 'inner(first_PK_stress,grad(v)) * dx'
             # u_physics = jax.vmap(stress_map)(u_grads, sigmas_old, epsilons_old, T, T-T_old)
-            u_grads_reshape = u_grads.reshape(-1, self.fe_u.vec, self.dim)
-
+            u_grads_reshape = u_grads.reshape(-1, self.fe_u.vec, self.dim)  
 
             # tensor_map(u_grad, F_old, Be_old, alpha_old, shape_grads_center, ugrad0, thetas, T_old, dt)
             u_physics = jax.vmap(stress_return_map)(u_grads_reshape, *cell_internal_vars_updated).reshape(u_grads.shape)
             # (num_quads, 1, vec, dim) * (num_quads, num_nodes, 1, dim) ->  (num_nodes, vec)
             val4 = np.sum(u_physics[:, None, :, :] * cell_v_grads_JxW_u, axis=(0, -1))
-
 
 
             ################################################################################
@@ -582,16 +545,12 @@ class ThermalMechanical(Problem):
             # (1, num_nodes, vec) * (num_quads, num_nodes, 1) -> (num_quads, vec)
             T = np.sum(cell_sol_T[None, :, :] * self.fe_T.shape_vals[:, :, None], axis=1)
 
-            # print("T:{0}, T_old:{1}".format(T.shape, T_old.shape))
             # (num_quads, 1, num_vec) * (num_quads, num_nodes, 1) * (num_quads, 1, 1) 
             # -> (num_nodes, vec)
             val1 = (self.C/self.dt* np.sum((T - T_old)[:, None, :]
                     * self.fe_T.shape_vals[:, :, None]
                     * cell_JxW_T[:, None, None],
-                    axis=0,
-                )
-            )
-
+                    axis=0,))
 
             detla_gammas = jax.vmap(detla_gamma_map)(u_grads_reshape, *cell_internal_vars_updated)  # (num_quads, )
 
@@ -613,8 +572,7 @@ class ThermalMechanical(Problem):
             val2 = self.Chi * np.sum(tmp2[:, None, None] * self.fe_T.shape_vals[:, :, None] * cell_JxW_T[:, None, None], axis=0)
 
 
-            # Handles the term 'kappa * T0 * tr((epsilon_crt-epsilon_old)/dt) * Q * dx'
-            # Handles the term 'k * inner(grad(T_crt),grad(Q)) * dx'
+            # Handles the term 'k * inner(grad(T_crt),grad(Q)) * dx'  (heat diffusion)
             # (1, num_nodes, vec, 1) * (num_quads, num_nodes, 1, dim) 
             # -> (num_quads, num_nodes, vec, dim)
             # -> (num_quads, vec, dim)
@@ -635,19 +593,13 @@ class ThermalMechanical(Problem):
     def get_universal_kernels_surface(self):
         # Neumann BC values for thermal problem
         # Heat transfer between press and rod
-        ## Hu: location_fns = [left, right]  
-        ## Hu: surface_map(u, x, *cell_internal_vars_surface)
 
         def thermal_neumann(T, old_T_face):
-            h = 10.0 # heat convection coefficien 1.0e4 W/m^2-K --> 10.0 mW/mm^2-K
-            # h = 0.0
+            h = 10.0 # heat convection coefficient 1.0e4 W/m^2-K --> 10.0 mW/mm^2-K
             T0 = 25. # room Temp.
-            # q_contact = h*(T0 - old_T_face[0])
             q_contact = h*(T0 - T[0])
             q = q_contact
             return -np.array([q])
-            # return np.array([q])
-
 
         def convection_neumann_left(cell_sol_flat, x, face_shape_vals, face_shape_grads, face_nanson_scale, old_T_left):
             # cell_sol_flat: (num_nodes*vec + ...,)
@@ -656,17 +608,15 @@ class ThermalMechanical(Problem):
             # face_shape_vals: (num_face_quads, num_nodes + ...)
             # face_shape_grads: (num_face_quads, num_nodes + ..., dim)
             # face_nanson_scale: (num_vars, num_face_quads)
-            ## Hu: old_T_top -- (num_face_quads, vec)
+            ## Hu: old_T_left -- (num_face_quads, vec)
             
             cell_sol_list = self.unflatten_fn_dof(cell_sol_flat)
             cell_sol_T = cell_sol_list[1]
             face_shape_vals = face_shape_vals[:, -self.fes[1].num_nodes:]
             face_nanson_scale = face_nanson_scale[0]
 
-
             # (1, num_nodes, vec) * (num_face_quads, num_nodes, 1) -> (num_face_quads, vec)
             T = np.sum(cell_sol_T[None, :, :] * face_shape_vals[:, :, None], axis=1)
-
 
             u_physics = jax.vmap(thermal_neumann)(T, old_T_left)  # (num_face_quads, vec)
             # (num_face_quads, 1, vec) * (num_face_quads, num_nodes, 1) * (num_face_quads, 1, 1) -> (num_nodes, vec)
@@ -692,7 +642,6 @@ class ThermalMechanical(Problem):
             cell_sol_T = cell_sol_list[1]
             face_shape_vals = face_shape_vals[:, -self.fes[1].num_nodes:]
             face_nanson_scale = face_nanson_scale[0]
-
 
             # (1, num_nodes, vec) * (num_face_quads, num_nodes, 1) -> (num_face_quads, vec)
             T = np.sum(cell_sol_T[None, :, :] * face_shape_vals[:, :, None], axis=1)
@@ -912,7 +861,6 @@ class AutomaticTimeStepperTM:
                 next_time = self.current_time + dt_this
                 scale = next_time / self.total_time  # 0..1 loading ramp
 
-
                 print("***Inner loop for checking convergence: Retries: {0}, Current dt: {1}, Scale: {2}, next_time: {3}".format(retries, dt_this, scale, next_time))
                 # Update timestep in problem
                 print("***Update dt_this and bc with scale...")
@@ -951,10 +899,7 @@ class AutomaticTimeStepperTM:
 
                 try:
                     print("** Try simulation with dt_this:{0}**".format(self.problem.dt))
-                    # new_sol_list = solver(self.problem, solver_options)  # returns [u, dT] in your code
                     new_sol_list, iteration_counter, has_converged = solver(self.problem, solver_options)  # returns [u, dT] in your code
-
-
 
                     #### Hu: Go into 'expect' if nan happens
                     if not has_converged:
@@ -985,7 +930,6 @@ class AutomaticTimeStepperTM:
                     a1_updated, a2_updated, a3_updated, a4_updated, a5_updated, _ = int_vars_u
                     self.int_vars = (a1_updated, a2_updated, a3_updated, a4_updated, a5_updated, a6, a7, a8)
                     
-
                     # accept step
                     self.current_time = next_time
                     converged = True
@@ -1131,7 +1075,27 @@ def build_cylinder_press_bcs(mesh, R, H, hit, current_sol_u=None, T_linear_fn=No
     else:
         pts_for_selection = pts  # Initial coordinates
         print(f"  [BC] Using initial coordinates")
-    
+
+    # ===== Build residual displacement lookup for multi-hit continuity =====
+    # When current_sol_u is provided (hit_idx > 0), we need to know the residual
+    # displacement at each reference node so that the Dirichlet BC can ramp from
+    # the residual value (no jump) to the new target value.
+    # NOTE: The lookup must use pure JAX operations (no scipy/numpy calls) because
+    # it is invoked inside jax.vmap where `p` is a JAX tracer, not a concrete array.
+    if current_sol_u is not None:
+        _pts_jax = np.array(pts)                      # (num_nodes, 3) — JAX array
+        _residual_u_jax = np.array(current_sol_u)     # (num_nodes, 3) — JAX array
+        def residual_u(p):
+            """Look up Hit (N-1) residual displacement for reference point p.
+            Pure-JAX implementation: finds nearest reference node via argmin."""
+            dists_sq = np.sum((_pts_jax - p[None, :]) ** 2, axis=1)
+            idx = np.argmin(dists_sq)
+            return _residual_u_jax[idx]
+        print(f"  [BC] Residual displacement lookup built (max |u_res| = {onp.max(onp.abs(onp.array(current_sol_u))):.6e})")
+    else:
+        def residual_u(p):
+            return np.zeros(3)
+
     # ===== Handle rotation =====
     # Convert Euler angles to quaternion
     rot_obj = Rotation.from_euler("x", hit.rotation_euler_x, degrees=True)
@@ -1296,20 +1260,23 @@ def build_cylinder_press_bcs(mesh, R, H, hit, current_sol_u=None, T_linear_fn=No
         """
         Update Dirichlet BCs for mechanical problem.
 
-        Single-hit assumption: rotation is static (computed once at BC creation),
-        so we use the precomputed `left_disp_vec` and `right_disp_vec`.
+        Multi-hit continuity: for hit_idx > 0 the prescribed displacement ramps
+        from the previous hit's residual displacement to the current hit's target:
+            u = u_residual + scale * (u_target - u_residual)
+        When current_sol_u is None (first hit), residual_u returns zeros and this
+        reduces to the original  u = scale * u_target.
         """
         # Build per-component value functions (matches expanded vecs/location_fns)
         new_value_fns = [
             zero_val,
             zero_val,
             zero_val,
-            (lambda p, idx=0: scale * left_disp_vec(p)[idx]),
-            (lambda p, idx=1: scale * left_disp_vec(p)[idx]),
-            (lambda p, idx=2: scale * left_disp_vec(p)[idx]),
-            (lambda p, idx=0: scale * right_disp_vec(p)[idx]),
-            (lambda p, idx=1: scale * right_disp_vec(p)[idx]),
-            (lambda p, idx=2: scale * right_disp_vec(p)[idx]),
+            (lambda p, idx=0: residual_u(p)[idx] + scale * (left_disp_vec(p)[idx] - residual_u(p)[idx])),
+            (lambda p, idx=1: residual_u(p)[idx] + scale * (left_disp_vec(p)[idx] - residual_u(p)[idx])),
+            (lambda p, idx=2: residual_u(p)[idx] + scale * (left_disp_vec(p)[idx] - residual_u(p)[idx])),
+            (lambda p, idx=0: residual_u(p)[idx] + scale * (right_disp_vec(p)[idx] - residual_u(p)[idx])),
+            (lambda p, idx=1: residual_u(p)[idx] + scale * (right_disp_vec(p)[idx] - residual_u(p)[idx])),
+            (lambda p, idx=2: residual_u(p)[idx] + scale * (right_disp_vec(p)[idx] - residual_u(p)[idx])),
         ]
         problem.fes[0].update_Dirichlet_boundary_conditions([location_fns_u, vecs, new_value_fns])
 
@@ -1402,14 +1369,13 @@ def refresh_problem_surface_integrals(problem):
 
 
 # =============================================================================
-# Main thermo-mechanical driver for two-hit forging simulation
+# Main thermo-mechanical driver for multi-hit forging simulation
 # =============================================================================
-def run_thermo_mech_cylinder_press_two_hits():
+def run_thermo_mech_cylinder_press_multi_hits():
     """
-    Run a two-hit forging simulation:
-    - Hit 1 at position x_band=[0.2, 0.4]*H with rotation
+    Run a multi-hit forging simulation:
+    - Hit 1 at position x_band=[0.5, 0.7]*H, no rotation
     - Cool to initial temperature profile
-    - Hit 2 at position x_band=[0.5, 0.7]*H with different rotation
     
     Key: F and alpha (plasticity history) carried forward; T reset; displacement resets each hit.
     """
@@ -1469,12 +1435,6 @@ def run_thermo_mech_cylinder_press_two_hits():
     print("H={0}, R_y={1}, R_z={2}".format(H, R_y, R_z))
 
     # === Initial temperature profile (this is reused after each hit to "cool" the material) ===
-    # T_top = 1127.1  # °C
-    # T_bot = 666.6   # °C
-
-    # Initial temperature profile:
-    # linear along x from bottom (T_bot) to x=72 (T_top),
-    # and constant T_top for x > 72.
     T_top = 1096.0  # °C
     T_bot = 676.0   # °C
     x_min = np.min(mesh.points[:, 0])
@@ -1491,24 +1451,24 @@ def run_thermo_mech_cylinder_press_two_hits():
     # === Define the two hits ===
     # 7.4 sec ~ 8.2 sec from experiment
     hit_1 = Hit(
-        x_min_band=0.5,  # 20% of H
-        x_max_band=0.7,  # 40% of H (band width = 0.2*H = 10mm for typical H=100mm forging)
+        x_min_band=0.5,
+        x_max_band=0.7, 
         compression_displacement=1.63,
         rotation_euler_x=0.0,
         total_time=0.8,   # duration for hit 1 (seconds)
     )
     
     hit_2 = Hit(
-        x_min_band=0.65,  # 50% of H
-        x_max_band=0.85,  # 70% of H (overlaps with first hit region)
+        x_min_band=0.65,  
+        x_max_band=0.85, 
         compression_displacement=1.63,
         rotation_euler_x=-15.0,  # Opposite rotation
         total_time=0.8,   # shorter hit
     )
 
     hit_3 = Hit(
-        x_min_band=0.55,  # 50% of H
-        x_max_band=0.75,  # 70% of H (overlaps with first hit region)
+        x_min_band=0.55,  
+        x_max_band=0.75, 
         compression_displacement=1.83,
         rotation_euler_x=30.0,  # Opposite rotation
         total_time=1.2,   # longer final hit
@@ -1641,7 +1601,5 @@ def run_thermo_mech_cylinder_press_two_hits():
     return True
 
 
-
 if __name__ == "__main__":
-    # Two-hit simulation (recommended):
-    run_thermo_mech_cylinder_press_two_hits()
+    run_thermo_mech_cylinder_press_multi_hits()
