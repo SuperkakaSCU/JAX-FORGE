@@ -121,5 +121,5 @@ If you use JAX-FEM, please cite:
 
 
 ## Support
-
+This code is under the NSF Engineering Research Center for Hybrid Autonomous Manufacturing Moving from Evolution to Revolution (ERC‐HAMMER)
 For issues and questions, please contact Fangleihu2021@u.northwestern.edu
