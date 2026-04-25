@@ -11,6 +11,8 @@ A GPU-accelerated finite element framework for modeling incremental forging proc
 - **Multi-physics**: Fully-coupled thermo-mechanical analysis
 - **Inverse Analysis**: Built-in support for parameter identification and design optimization
 
+![Temperature Evolution](docs/gif/hit_1.gif)
+
 ## Key Features
 
 - **Constitutive Models**: J2 finite-strain plasticity with F-bar method and nonlinear isotropic hardening
@@ -113,7 +115,7 @@ If you use JAX-FEM, please cite:
 
 
 ## References
-- [JAX-FORGE] to be appeared on CIRP
+- [JAX-FORGE] to appear on CIRP
 - [Original JAX-FEM Repository](https://github.com/deepmodeling/jax-fem)
 - [JAX-FEM Paper](https://arxiv.org/abs/2212.00964)
 - Simo & Rifai (1990) - Enhanced strain methods
@@ -121,5 +123,5 @@ If you use JAX-FEM, please cite:
 
 
 ## Support
-This code is under the NSF Engineering Research Center for Hybrid Autonomous Manufacturing Moving from Evolution to Revolution (ERC‐HAMMER)
+
 For issues and questions, please contact Fangleihu2021@u.northwestern.edu
