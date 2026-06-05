@@ -1,7 +1,22 @@
 """Main driver for multi-hit thermo-mechanical forging simulation.
 
-Version 7 — Modular refactor of jax_forge_hits.py (Version 6).
-All constitutive, time-stepping, and BC logic factored into separate modules.
+Version 8 — Multi-hit rotational forging with robust hit-to-hit handoff.
+Builds on the Version 7 modular refactor (constitutive / time-stepping / BC).
+
+Key Version 8 changes:
+  - 4-hit rotational schedule (0/90/180/270 deg, 3.0 mm press, 1.2 s each).
+  - Updated-Lagrangian dynamic contact (Route B): the contact set and the
+    prescribed displacements are re-detected every load step from the current
+    deformed surface, replacing the static reference-config node selection.
+  - Thermal-state relaxation between hits: T_old is ramped from the cooled
+    end-state to the reheated profile over 10 increments, each with a mechanical
+    re-equilibration, removing the dt-independent thermal-stress mismatch that
+    otherwise stalls Newton on the first step of a reheated hit.
+  - Robust state handoff: AutomaticTimeStepperTM.seed_state() resets the
+    extrapolation history (fixing the doubled first-step initial guess), and the
+    contact BCs are rebuilt on the post-relaxation surface.
+  - Numerics: high-temperature modulus floor (prevents a near-singular tangent)
+    and a cached JIT internal-variable update (removes per-step recompilation).
 
 Usage:
     python -m applications.Agility_Forge.main
@@ -10,7 +25,7 @@ Usage:
 """
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 try:
     import open3d as o3d
@@ -97,6 +112,15 @@ def run_thermo_mech_cylinder_press_multi_hits():
         except (OSError, Exception) as e:
             print(f"Warning: Could not remove {item}: {e}")
 
+    # clean per-hit step/scale plots from previous runs (avoid stale duplicates,
+    # e.g. a hit_4 plot left over when this run only does 3 hits)
+    for pattern in ("hit_*_step_data.png", "hit_*_step_data_scales.txt"):
+        for item in glob.glob(os.path.join(data_dir, pattern)):
+            try:
+                os.remove(item)
+            except OSError as e:
+                print(f"Warning: Could not remove {item}: {e}")
+
     # Load initial mesh
     mesh_0 = o3d.io.read_triangle_mesh(str(stock_mesh_path))
     open3d_to_json(mesh_0, json_mesh_path)
@@ -127,10 +151,48 @@ def run_thermo_mech_cylinder_press_multi_hits():
         return T_bot + (T_top - T_bot) * ((xc - x_min) / (x_top - x_min))
 
     # === Define hits ===
+    # hit_1 = Hit(
+    #     x_min_band=0.5,
+    #     x_max_band=0.7,
+    #     compression_displacement=3.0,
+    #     rotation_euler_x=0.0,
+    #     total_time=1.2,
+    # )
+
+    # hit_2 = Hit(
+    #     x_min_band=0.51,
+    #     x_max_band=0.71,
+    #     compression_displacement=3.0,
+    #     rotation_euler_x=90.0,
+    #     total_time=1.2,
+    # )
+
+    # hit_3 = Hit(
+    #     x_min_band=0.5,
+    #     x_max_band=0.7,
+    #     compression_displacement=3.0,
+    #     rotation_euler_x=180.0,
+    #     total_time=1.2,
+    # )
+
+
+    # hit_4 = Hit(
+    #     x_min_band=0.5,
+    #     x_max_band=0.7,
+    #     compression_displacement=3.0,
+    #     rotation_euler_x=270.0,
+    #     total_time=1.2,
+    # )
+
+    
+    # hits = [hit_1, hit_2, hit_3, hit_4]
+
+    
+    # Another set of hits with smaller compression and different rotations, for testing:
     hit_1 = Hit(
         x_min_band=0.5,
         x_max_band=0.7,
-        compression_displacement=1.63,
+        compression_displacement=2.5,
         rotation_euler_x=0.0,
         total_time=0.8,
     )
@@ -138,7 +200,7 @@ def run_thermo_mech_cylinder_press_multi_hits():
     hit_2 = Hit(
         x_min_band=0.65,
         x_max_band=0.85,
-        compression_displacement=1.63,
+        compression_displacement=2.5,
         rotation_euler_x=-15.0,
         total_time=0.8,
     )
@@ -146,12 +208,13 @@ def run_thermo_mech_cylinder_press_multi_hits():
     hit_3 = Hit(
         x_min_band=0.55,
         x_max_band=0.75,
-        compression_displacement=1.83,
+        compression_displacement=3.0,
         rotation_euler_x=30.0,
         total_time=1.2,
     )
 
     hits = [hit_1, hit_2, hit_3]
+
 
     # === Build initial temperature field ===
     pts = onp.array(mesh.points)
@@ -204,7 +267,107 @@ def run_thermo_mech_cylinder_press_multi_hits():
         # Reset temperature between hits
         if hit_idx > 0:
             print("\nResetting temperature to initial profile (cool-down between hits)...")
+
+            # === Thermal-state relaxation by gradual temperature ramp ===
+            # The carried mechanical history (be_old / F_old / alpha) was
+            # equilibrated under the PREVIOUS hit's (cooled) temperature.  If we
+            # reset the temperature to the reheated profile in one shot, the new
+            # T_old makes the thermal-stress term and the (much lower) high-T
+            # yield strength jump abruptly, leaving a dt-INDEPENDENT static
+            # equilibrium mismatch that Newton cannot bridge in a single solve
+            # (it stalls even at dt -> 1e-7).
+            #
+            # Instead, ramp T_old linearly from the hit-1 cold end-state to the
+            # reheated profile over several increments, doing one mechanical
+            # re-equilibration (scale = 0, platen fixed) at each increment.  Each
+            # step then carries only a small thermal mismatch and converges.
+            T_cold = onp.array(current_sol_dT)        # hit-1 cooled end-state
+            T_hot = onp.array(sol_dT_initial)         # reheated target profile
+            n_ramp = 10
+            relax_dt = 1e-4
+            print(f"\nRunning thermal-state relaxation: {n_ramp}-step temperature "
+                  f"ramp (cold -> reheated), scale=0, no contact motion...")
+
+            for k in range(1, n_ramp + 1):
+                frac = k / n_ramp
+                T_blend = np.array((1.0 - frac) * T_cold + frac * T_hot)
+                print(f"  [relax {k}/{n_ramp}] T_old ramp frac={frac:.2f}, "
+                      f"T min/max = {float(np.min(T_blend)):.1f}/{float(np.max(T_blend)):.1f} C")
+
+                relax_stepper = AutomaticTimeStepperTM(
+                    problem,
+                    total_time=relax_dt,
+                    initial_dt=relax_dt,
+                    min_dt=1e-8,
+                    max_dt=relax_dt,
+                    max_retries=10,
+                    increase_factor=1.0,
+                    decrease_factor=0.5,
+                    line_search_after=0,
+                    cool_factor=0.0,            # no extra cooling during ramp
+                    surface_inds=surface_inds,
+                )
+                # Seed state AND reset extrapolation history (avoids the
+                # doubled-initial-guess bug on the first sub-step).
+                relax_stepper.seed_state(current_sol_u, T_blend, current_int_vars)
+
+                ok_relax = relax_stepper.run(
+                    bc_update_fn=bc_update_fn,
+                    bc_params_fn=lambda step, scale: (step, 0.0),  # force scale=0
+                    rho_ini=np.array([1.0, 1.0, 1.0, 1.0]),
+                    vtk_dir=None,
+                    save_every=1,
+                )
+                if not ok_relax:
+                    print(f"\n[ERROR] Hit {hit_idx + 1} thermal-state relaxation "
+                          f"failed at ramp step {k}/{n_ramp}!")
+                    print(f"Report: {relax_stepper.step_report[-5:]}")
+                    return False
+
+                # Carry the re-equilibrated mechanical state to the next increment.
+                # Temperature is prescribed by the ramp, so only u / int_vars advance.
+                current_sol_u = relax_stepper.sol_u
+                current_int_vars = relax_stepper.int_vars
+
+            # =================================================================
+            # [DIAG-B] Compare the last relax step's *solved* temperature
+            # against the target sol_dT_initial that hit-N is about to use
+            # as T_old.  A large delta => hit-N's first step sees a non-
+            # equilibrium T_old (dt-independent thermal-stress jump).
+            # =================================================================
+            try:
+                T_relaxed = np.array(relax_stepper.sol_dT)
+                T_target = np.array(sol_dT_initial)
+                dT_field = T_relaxed - T_target
+                l2 = float(np.linalg.norm(dT_field))
+                linf = float(np.max(np.abs(dT_field)))
+                t_rel_mn = float(np.min(T_relaxed)); t_rel_mx = float(np.max(T_relaxed))
+                t_tgt_mn = float(np.min(T_target));  t_tgt_mx = float(np.max(T_target))
+                print(f"[DIAG-B] last relax-solved T:  min/max = {t_rel_mn:.2f}/{t_rel_mx:.2f} C")
+                print(f"[DIAG-B] target sol_dT_initial: min/max = {t_tgt_mn:.2f}/{t_tgt_mx:.2f} C")
+                print(f"[DIAG-B] ||T_relaxed - T_target||_2 = {l2:.4e}, "
+                      f"max|ΔT| = {linf:.4f} C")
+            except Exception as _diag_e:
+                print(f"[DIAG-B] temperature-mismatch check failed: {_diag_e}")
+
+            # Finalize: mechanical state now equilibrated under the reheated profile
             current_sol_dT = sol_dT_initial
+            print("Relaxation complete: mechanical state re-equilibrated under reheated T_old.")
+
+            # Rebuild the contact BCs on the POST-relaxation surface.
+            # The BCs above were built from the hit-(N-1) end displacement and the
+            # platen reference planes (y_rot_min0/max0) were frozen at that cold
+            # geometry.  The relaxation reheats and re-equilibrates the body
+            # (thermal expansion), so by the time this hit starts the actual
+            # surface differs from that frozen reference.  Rebuilding here aligns
+            # the platen planes with the real starting geometry, avoiding a
+            # dt-independent contact jump on the first step.
+            dirichlet_bc_info_u, dirichlet_bc_info_T, location_fns_convect, bc_update_fn, surface_inds = \
+                build_cylinder_press_bcs(mesh, R=R, H=H, hit=hit,
+                                         current_sol_u=current_sol_u, T_linear_fn=T_linear_x)
+            problem.dirichlet_bc_info = [dirichlet_bc_info_u, dirichlet_bc_info_T]
+            problem.location_fns = location_fns_convect
+            refresh_problem_surface_integrals(problem)
 
         # Create stepper
         stepper = AutomaticTimeStepperTM(
@@ -221,9 +384,9 @@ def run_thermo_mech_cylinder_press_multi_hits():
             surface_inds=surface_inds,
         )
 
-        stepper.sol_list = [current_sol_u, current_sol_dT]
-        stepper.sol_u, stepper.sol_dT = [current_sol_u, current_sol_dT]
-        stepper.int_vars = current_int_vars
+        # Seed state AND reset extrapolation history (avoids the
+        # doubled-initial-guess bug on the first step of each hit).
+        stepper.seed_state(current_sol_u, current_sol_dT, current_int_vars)
 
         # Run
         print(f"\nStarting hit {hit_idx + 1} solver...")

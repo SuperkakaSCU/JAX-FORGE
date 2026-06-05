@@ -1,6 +1,6 @@
-## Version 7: Modular refactor of jax_forge_hits.py (Version 6)
+## Version 8: See updated README.md for details on the new modular structure and features.
 ##
-## Splits the monolithic file into separate modules for maintainability:
+## Version 7: Splits the monolithic file into separate modules for maintainability:
 ##   - hit_config.py          : Hit dataclass for multi-hit simulation parameters
 ##   - material_data.py       : Temperature-dependent material data tables (15-5PH)
 ##   - constitutive.py        : ThermalMechanical Problem class (J2 plasticity, weak form)

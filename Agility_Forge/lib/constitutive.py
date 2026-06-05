@@ -55,6 +55,14 @@ class ThermalMechanical(Problem):
         self.modulus_reducs = np.array([1., 0.996, 0.978, 0.963, 0.947, 0.930,
                                        90/196, 80/196, 6/196, 5.8/196, 5.8/196])
 
+        # High-temperature modulus floor (safety net): clamp the modulus
+        # reduction factor from below so the elastic stiffness never collapses
+        # toward zero in the thermally softened region, which would make the
+        # mechanical tangent near-singular and stall Newton.  The table already
+        # plateaus at 5.8/196; this guarantees the floor even if the table is
+        # edited or T is extrapolated beyond 1100 C.
+        self.modulus_reduc_floor = 5.8 / 196.
+
         # Deformation gradient (identity initially)
         self.F_old = np.repeat(
             np.repeat(np.eye(self.dim)[None, None, :, :], len(self.fe_u.cells), axis=0),
@@ -126,7 +134,9 @@ class ThermalMechanical(Problem):
         """Define constitutive model and post-processing functions."""
         def modulus_temp(T):
             T = np.asarray(T).reshape(())
-            return np.interp(T, self.modulus_temps, self.modulus_reducs) * self.E
+            reduc = np.interp(T, self.modulus_temps, self.modulus_reducs)
+            reduc = np.maximum(reduc, self.modulus_reduc_floor)
+            return reduc * self.E
 
         def yield_stress_temp(T):
             T = np.asarray(T).reshape(())
@@ -420,8 +430,17 @@ class ThermalMechanical(Problem):
     # =================================================================
     def update_int_vars_gp(self, sol, int_vars):
         """Update internal variables at all Gauss points."""
-        _, update_int_vars_map, _, _, _ = self.get_maps()
-        vmap_update = jax.jit(jax.vmap(jax.vmap(update_int_vars_map)))
+        # Change-3: build the jitted vmap-vmap update ONCE and cache it.
+        # Previously this re-created `jax.jit(jax.vmap(jax.vmap(...)))` from a
+        # freshly-closed `get_maps()` on every call, so JAX re-traced and
+        # re-compiled it for every accepted time step (called once per step at
+        # time_stepper.py).  The closure only depends on `self`'s (constant)
+        # material parameters, so caching is numerically identical — it merely
+        # removes the per-step recompilation.
+        if not hasattr(self, "_jit_update_int_vars"):
+            _, update_int_vars_map, _, _, _ = self.get_maps()
+            self._jit_update_int_vars = jax.jit(jax.vmap(jax.vmap(update_int_vars_map)))
+        vmap_update = self._jit_update_int_vars
 
         u_grads = np.sum(
             np.take(sol, self.fe_u.cells, axis=0)[:, None, :, :, None]

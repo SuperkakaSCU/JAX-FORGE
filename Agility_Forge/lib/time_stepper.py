@@ -78,6 +78,27 @@ class AutomaticTimeStepperTM:
         else:
             self.surface_inds = np.array(surface_inds, dtype=int)
 
+    def seed_state(self, sol_u, sol_dT, int_vars=None):
+        """Seed the stepper with an initial [u, T] state (and optional int_vars).
+
+        Crucially this ALSO resets the extrapolation history (``sol_hist`` /
+        ``dt_hist``) to the seeded state.  ``__init__`` initialises the history
+        to the zero solution; if a caller overwrites ``sol_list`` without
+        touching the history, the first ``_extrapolate_guess`` computes
+            guess = sol_n + (sol_n - 0)/dt * dt = 2 * sol_n
+        i.e. it DOUBLES the seeded displacement/temperature.  For a carried-over
+        deformed, plastically-loaded state (multi-hit) this doubled guess inverts
+        elements (det F <= 0 -> NaN) and the first Newton solve cannot recover.
+        Resetting the history here makes the first step warm-start from the exact
+        seeded state (zero extrapolation velocity).
+        """
+        self.sol_list = [sol_u, sol_dT]
+        self.sol_u, self.sol_dT = sol_u, sol_dT
+        self.sol_hist = [self.sol_list, self.sol_list]
+        self.dt_hist = [self.dt, self.dt]
+        if int_vars is not None:
+            self.int_vars = int_vars
+
     def _extrapolate_guess(self):
         """Linear extrapolation for [u, T] using last step."""
         sol_n = self.sol_list
@@ -182,6 +203,56 @@ class AutomaticTimeStepperTM:
                     f"\nStep {self.step_count} try {retries+1} | "
                     f"time={self.current_time:.6f} dt={dt_this:.3e} scale={scale:.6f} ls={use_ls}"
                 )
+
+                # =========================================================
+                # [DIAG-A] On the FIRST try of the FIRST step of this stepper
+                # only: report carried-state quality and seed-state residual.
+                # This brackets whether the hot-start is already ill-posed
+                # (NaN / inverted elements) before Newton even begins.
+                # =========================================================
+                if self.step_count == 1 and retries == 0:
+                    try:
+                        F_old_arr = int_vars_old[0]
+                        be_old_arr = int_vars_old[1]
+                        det_F = np.linalg.det(F_old_arr)
+                        n_bad_det = int(np.sum(det_F <= 0.0))
+                        det_min = float(np.min(det_F))
+                        det_max = float(np.max(det_F))
+                        det_has_nan = bool(np.any(np.isnan(det_F)))
+                        # symmetrise be_old for stable eigvalsh
+                        be_sym = 0.5 * (be_old_arr + np.swapaxes(be_old_arr, -1, -2))
+                        be_eigs = np.linalg.eigvalsh(be_sym)
+                        be_eig_min = float(np.min(be_eigs))
+                        be_eig_max = float(np.max(be_eigs))
+                        be_has_nan = bool(np.any(np.isnan(be_old_arr)))
+                        alpha_old_arr = int_vars_old[2]
+                        alpha_min = float(np.min(alpha_old_arr))
+                        alpha_max = float(np.max(alpha_old_arr))
+                        u_old_norm = float(np.linalg.norm(sol_u_old))
+                        T_old_min = float(np.min(sol_dT_old))
+                        T_old_max = float(np.max(sol_dT_old))
+                        print(f"[DIAG-A] carried F_old: det min/max = {det_min:.6e}/{det_max:.6e}, "
+                              f"#GP(det<=0) = {n_bad_det}, NaN={det_has_nan}")
+                        print(f"[DIAG-A] carried be_old: eig min/max = {be_eig_min:.6e}/{be_eig_max:.6e}, NaN={be_has_nan}")
+                        print(f"[DIAG-A] carried alpha_old: min/max = {alpha_min:.6e}/{alpha_max:.6e}")
+                        print(f"[DIAG-A] seed state: ||u_old||={u_old_norm:.6e}, T_old min/max={T_old_min:.2f}/{T_old_max:.2f} C")
+                    except Exception as _diag_e:
+                        print(f"[DIAG-A] carried-state stats failed: {_diag_e}")
+
+                    try:
+                        # evaluate the residual at the seed state; set_params
+                        # has already been called just above with int_vars_old
+                        # / sol_u_old / sol_dT_old, so this is the true hot-
+                        # start residual the Newton solver will start from.
+                        res_list = self.problem.compute_residual([sol_u_old, sol_dT_old])
+                        res_u_norm = float(np.linalg.norm(res_list[0]))
+                        res_T_norm = float(np.linalg.norm(res_list[1]))
+                        res_u_nan = bool(np.any(np.isnan(res_list[0])))
+                        res_T_nan = bool(np.any(np.isnan(res_list[1])))
+                        print(f"[DIAG-A] seed-state residual: ||R_u||={res_u_norm:.6e} (NaN={res_u_nan}), "
+                              f"||R_T||={res_T_norm:.6e} (NaN={res_T_nan})")
+                    except Exception as _diag_e:
+                        print(f"[DIAG-A] seed-state residual eval failed: {_diag_e}")
 
                 try:
                     print("** Try simulation with dt_this:{0}**".format(self.problem.dt))

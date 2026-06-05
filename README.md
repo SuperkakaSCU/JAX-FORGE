@@ -27,7 +27,7 @@ A GPU-accelerated finite element framework for modeling incremental forging proc
 
 This repository contains two versions of the forging simulation code. The only difference between them is **code organization** — the physics, algorithms, and results are identical.
 
-| | Version 6 (`Example/`) | Version 7 (`Agility_Forge/`) |
+| | Version 6 (`Example/`) | Version 8 (`Agility_Forge/`) |
 |---|---|---|
 | **Structure** | Single monolithic file per example | Modular: separate files for constitutive model, BCs, time-stepper, etc. |
 | **Files** | `jax_forge_hits.py` (CIRP) / `jax_forge_fine_mesh.py` (Fine_mesh) | `main.py` + `lib/constitutive.py` + `lib/boundary_conditions.py` + `lib/time_stepper.py` + ... |
@@ -61,7 +61,7 @@ jax-fem/
 │   │   └── Fine_mesh/
 │   │       ├── jax_forge_fine_mesh.py   # Main simulation (fine-mesh version)
 │   │       └── mesh_container.py
-│   └── Agility_Forge/                   # Version 7 — modular refactor
+│   └── Agility_Forge/                   # Version 8 — modular refactor
 │       ├── main.py                      # Entry point
 │       ├── hit_config.py                # Hit dataclass
 │       ├── material_data.py             # Material property tables
@@ -93,7 +93,7 @@ python -m applications.Example.CIRP.jax_forge_hits
 python -m applications.Example.Fine_mesh.jax_forge_fine_mesh
 ```
 
-**Version 7** (modular — run as module):
+**Version 8** (modular — run as module):
 
 ```bash
 cd /path/to/jax-fem
