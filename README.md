@@ -115,11 +115,14 @@ If you use JAX-FEM, please cite:
 
 
 ## References
-- [JAX-FORGE] to appear on CIRP
-- [Original JAX-FEM Repository](https://github.com/deepmodeling/jax-fem)
+- [JAX-FORGE Paper](https://authors.elsevier.com/sd/article/S0007-8506(26)00029-6)
+- [JAX-FEM Repository](https://github.com/deepmodeling/jax-fem)
 - [JAX-FEM Paper](https://arxiv.org/abs/2212.00964)
 - Simo & Rifai (1990) - Enhanced strain methods
 
+## Other related repo
+- [JAX-CPFEM Repo](https://github.com/SuperkakaSCU/JAX-CPFEM)
+- [JAX-PF Repo](https://github.com/SuperkakaSCU/JAX-PF)
 
 
 ## Support
