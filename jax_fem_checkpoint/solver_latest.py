@@ -730,8 +730,8 @@ def row_elimination_petsc(A, row_inds):
 # NOTE: requires CuPy and cupyx
 ################################################################################
 # CUDA kernel: zero a row and set diag=1
-import cupy as cp
-import cupyx.scipy.sparse as cusparse
+# import cupy as cp   # guarded import already at top of file
+# import cupyx.scipy.sparse as cusparse   # guarded import already at top of file
 import numpy as onp
 import scipy.sparse
 import math
@@ -1157,8 +1157,8 @@ def _kway_merge_triplets(sorted_chunks):
     
     return I_merged, J_merged, V_merged
 #==============================
-import cupy as cp
-import cupyx.scipy.sparse as cusparse
+# import cupy as cp   # guarded import already at top of file
+# import cupyx.scipy.sparse as cusparse   # guarded import already at top of file
 import scipy.sparse
 import numpy as onp
 import math
@@ -1641,8 +1641,8 @@ def get_A_multi_gpu_fast1(problem, n_gpus=None, use_processes=False, max_memory_
     
     return A_cpu
 
-import cupy as cp
-import cupyx.scipy.sparse as cusparse
+# import cupy as cp   # guarded import already at top of file
+# import cupyx.scipy.sparse as cusparse   # guarded import already at top of file
 import scipy.sparse
 import numpy as onp
 import math

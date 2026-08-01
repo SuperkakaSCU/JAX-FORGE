@@ -7,8 +7,18 @@
 
 # --- Scan parameters (shared by all sequences) ---
 scan:
-  band_width: 0.2          # contact band width (fraction of H)
-  hot_zone: [0.3, 0.9]     # forgeable hot zone range (fraction of H)
+  band_width_mm: 19.3      # PHYSICAL die width in mm (constant; steel does not
+                           # widen when the rod stretches).  19.3 = 0.2*H of the
+                           # 96.52 mm stock, i.e. matches the legacy footprint.
+  hot_zone: [0.3, 0.9]     # forgeable zone, fraction of the CURRENT rod length.
+                           # Keep the lower bound >= ~0.3: a band reaching x=0
+                           # sits next to the clamped end face, where the plastic
+                           # zone cannot flow sideways and the solver needs extra
+                           # step-halving (measured 10-14 NaN events over 8 hits
+                           # at 0.05, versus none at the mirrored 0.95).
+                           # Bands running past x=0 or x=H are clamped: the die
+                           # then only partly touches the stock and the effective
+                           # footprint shrinks -- a [band][warn] line reports it.
   overlap: 0.30             # overlap between adjacent band positions
   v_platen: 2.04            # platen velocity mm/s  (total_time = disp / v_platen)
 
@@ -51,3 +61,75 @@ heavy_forge:
   position_configs:
     - depths: [0.35, 0.60]
       rotations: [0.0, 45.0, 90.0, 135.0]
+
+# ============================================================
+# [big-def] 8-scenario validation matrix for the deformed-rod band mapping.
+#
+# hot_zone is now a fraction of the CURRENT forgeable span [0, H]; band_width_mm
+# is the fixed physical die footprint.  Cases are chosen to hit specific failure
+# mechanisms, not just to vary numbers:
+#   *_edge_*      -> band runs past x=0 / x=H, where onp.interp CLAMPS silently
+#   b_concentrated-> repeated hits on one spot; largest local stretch, most
+#                    likely to break monotonicity of the inverse map
+#   s_norot       -> no rotation, section flattens, cylindrical contact test
+#                    drifts furthest from the true surface
+#   b_extreme     -> 22% bite, probing the convergence limit
+# ============================================================
+
+# ---------- batch 1: small strain / boundary handling ----------
+s_baseline:
+  description: 'S1 small 0.40mm, 5 positions 0.4-0.8, +/-90deg'
+  hot_zone: [0.3, 0.9]
+  position_configs:
+    - depths: [0.40]
+      rotations: [0.0, 90.0]
+
+s_edge_low:
+  description: 'S2 small, band centred at 0.05 -> left edge OVERRUNS x=0'
+  hot_zone: [0.0, 0.1]
+  position_configs:
+    - depths: [0.40, 0.40]
+      rotations: [0.0, 90.0, 180.0, 270.0]
+
+s_edge_high:
+  description: 'S3 small, band centred at 0.95 -> right edge OVERRUNS x=H'
+  hot_zone: [0.9, 1.0]
+  position_configs:
+    - depths: [0.40, 0.40]
+      rotations: [0.0, 90.0, 180.0, 270.0]
+
+s_norot:
+  description: 'S4 small, NO rotation - section flattens in one direction'
+  hot_zone: [0.3, 0.9]
+  position_configs:
+    - depths: [0.40, 0.40]
+      rotations: [0.0]
+
+# ---------- batch 2: large strain / extremes ----------
+b_baseline:
+  description: 'B1 large 2.50mm (15.7% of section), 5 positions'
+  hot_zone: [0.3, 0.9]
+  position_configs:
+    - depths: [2.50]
+      rotations: [0.0, 90.0]
+
+b_concentrated:
+  description: 'B2 large, all 8 hits on ONE spot (0.50) - extreme local stretch'
+  hot_zone: [0.45, 0.55]
+  position_configs:
+    - depths: [2.50, 2.50]
+      rotations: [0.0, 90.0, 180.0, 270.0]
+
+b_edge:
+  description: 'B3 large + edge (0.90) - worst case: flow to free end + overrun'
+  hot_zone: [0.85, 0.95]
+  position_configs:
+    - depths: [2.50, 2.50]
+      rotations: [0.0, 90.0, 180.0, 270.0]
+
+b_extreme:
+  description: 'B4 3.50mm bite (22% of section) - convergence limit probe'
+  hot_zone: [0.4, 0.8]
+  position_configs:
+    - depths: [3.50]
+      rotations: [0.0, 90.0]

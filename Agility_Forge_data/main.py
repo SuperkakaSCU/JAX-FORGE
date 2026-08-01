@@ -39,6 +39,7 @@ except ImportError:
 
 import json
 import math
+from dataclasses import replace
 import shutil
 import glob
 import time
@@ -119,8 +120,13 @@ def expand_hits(sequence_config, scan_config, H, noise_config=None, add_noise=Fa
     if rng is None:
         rng = onp.random.default_rng()
 
-    band_width = scan_config["band_width"]
-    hot_zone_min, hot_zone_max = scan_config["hot_zone"]
+    # [big-def] die width is physical mm; convert to a reference-length fraction
+    # only for laying out the band centres.
+    band_width_mm = float(scan_config["band_width_mm"])
+    band_width = band_width_mm / float(H)
+    # A sequence may override the forgeable zone (used by the edge-case scenarios).
+    hot_zone_min, hot_zone_max = sequence_config.get("hot_zone",
+                                                     scan_config["hot_zone"])
     overlap = scan_config["overlap"]
     v_platen = scan_config["v_platen"]
 
@@ -136,6 +142,19 @@ def expand_hits(sequence_config, scan_config, H, noise_config=None, add_noise=Fa
         band_centers = [0.5 * (center_min + center_max)]
     else:
         band_centers = list(onp.linspace(center_min, center_max, n_positions))
+
+    # [hits] Soft check: forging right next to the clamped end face is legal but
+    # numerically harder -- the plastic zone has nowhere to flow on that side, so
+    # the full Newton step inverts elements more often and the solver falls back
+    # to half steps.  Measured on this stock: a band reaching x=0 (5 mm from the
+    # clamped face) produced 10-14 NaN/step-halving events over 8 hits, while the
+    # mirror case at the free end produced none.
+    lowest_band_edge_mm = (center_min - band_width / 2.0) * float(H)
+    if lowest_band_edge_mm < 0.25 * float(H):
+        print(f"  [hits][warn] hot_zone lower bound puts the die edge at "
+              f"{lowest_band_edge_mm:.1f} mm, close to the clamped end face; "
+              f"expect extra Newton step-halving there. Recommended lower "
+              f"bound is >= 0.3 (default hot_zone [0.3, 0.9] is safe).")
 
     hits = []
     position_configs = sequence_config["position_configs"]
@@ -177,6 +196,8 @@ def expand_hits(sequence_config, scan_config, H, noise_config=None, add_noise=Fa
                         compression_displacement=float(noised_d),
                         rotation_euler_x=float(noised_r),
                         total_time=float(total_time),
+                        band_center_frac=float(noised_center),
+                        band_width_mm=band_width_mm,
                     )
                     hits.append(hit)
 
@@ -186,6 +207,95 @@ def expand_hits(sequence_config, scan_config, H, noise_config=None, add_noise=Fa
 # =============================================================================
 # Run one series (multi-hit forging on a single workpiece)
 # =============================================================================
+def _remap_band_current(hit, mesh, current_sol_u, H):
+    """Re-map the hammer band onto the CURRENT deformed rod (large-deformation).
+
+    Legacy behaviour tied both the landing point and the band width to the
+    REFERENCE length H, which only holds while the rod barely deforms:
+
+      * landing point — ``x_min_band * H`` is a fraction of the ORIGINAL rod, so
+        once the rod elongates the hammer lands progressively short of where the
+        operator means ("30% of the bar" is 30% of the bar as it is NOW).
+      * band width — a fraction of H widens with the rod.  The die is steel; its
+        footprint is a fixed number of millimetres.
+
+    Both are fixed here, and the mapping back onto the reference mesh is done by
+    INVERTING THE ACTUAL DEFORMATION rather than assuming uniform stretch.  That
+    matters for cogging: hit sections elongate, untouched sections do not, so the
+    material point sitting at 60% of the deformed rod is generally NOT at 60% of
+    the reference rod.
+
+    Returns ``(hit, info)`` — hit with x_min_band/x_max_band overwritten (still
+    fractions of H, so build_cylinder_press_bcs is untouched), and info for
+    logging.  Returns the hit unchanged when the new fields are absent (legacy).
+    """
+    if hit.band_center_frac is None or hit.band_width_mm is None:
+        return hit, None
+
+    pts = onp.array(mesh.points)
+    X = pts[:, 0]
+    x_def = X + (onp.zeros_like(X) if current_sol_u is None
+                 else onp.array(current_sol_u)[:, 0])
+    # Deformation map: section-average deformed x for each reference x.
+    Xu, inv = onp.unique(X, return_inverse=True)
+    xu = onp.bincount(inv, weights=x_def) / onp.bincount(inv)
+    xu = onp.maximum.accumulate(xu)          # enforce monotonicity vs round-off
+
+    # The fraction is taken over the FORGEABLE span [0, H] of the reference rod,
+    # matching the legacy convention (any stock at x < 0 is the held end and is
+    # not counted).  Follow that span through the deformation so the landing
+    # point tracks the material as it elongates.
+    x0_def = float(onp.interp(0.0, Xu, xu))
+    xH_def = float(onp.interp(float(H), Xu, xu))
+    L_def = xH_def - x0_def
+    if not onp.isfinite(L_def) or L_def <= 1e-9:
+        return hit, None
+
+    # Target footprint on the CURRENT rod, in physical mm.
+    c_phys = x0_def + float(hit.band_center_frac) * L_def
+    half_w = 0.5 * float(hit.band_width_mm)
+
+    # [band] Detect overhang in PHYSICAL space, before interpolating.  onp.interp
+    # clamps out-of-range inputs to the endpoints, so testing the returned
+    # reference coordinates would never see a die running past x=H.
+    lo_phys, hi_phys = c_phys - half_w, c_phys + half_w
+    over_lo = max(0.0, x0_def - lo_phys)
+    over_hi = max(0.0, hi_phys - xH_def)
+
+    X_lo = float(onp.interp(lo_phys, xu, Xu))
+    X_hi = float(onp.interp(hi_phys, xu, Xu))
+
+    # Guard: never let the reference band collapse below one element, otherwise
+    # the contact set degenerates (a 1.66 mm band once left 64 contact nodes and
+    # rigid-shifted 87% of the mesh in a sibling package).
+    dX = onp.diff(Xu)
+    h_ele = float(onp.median(dX)) if len(dX) else 0.0
+    if X_hi - X_lo < h_ele and h_ele > 0.0:
+        mid = 0.5 * (X_lo + X_hi)
+        X_lo, X_hi = mid - 0.5 * h_ele, mid + 0.5 * h_ele
+
+    # [band] Warn when the die runs off the end of the stock.  Clamping is
+    # physically right -- a die pressed past the end only contacts part of its
+    # face -- but it silently shrinks the footprint, and the printed band width
+    # then looks like a narrower die rather than a partially engaged one.
+    if over_lo > 1e-9 or over_hi > 1e-9:
+        die_w = 2.0 * half_w
+        engaged = max(0.0, min(hi_phys, xH_def) - max(lo_phys, x0_def))
+        pct = 100.0 * engaged / die_w if die_w > 1e-12 else 0.0
+        side = "low end (x=0)" if over_lo >= over_hi else "high end (x=H)"
+        print(f"  [band][warn] die overhangs the {side} by "
+              f"{max(over_lo, over_hi):.2f} mm; only {engaged:.2f} of "
+              f"{die_w:.2f} mm is on the stock ({pct:.0f}% of the die "
+              f"engaged). Contact area and hence pressure are reduced.")
+
+    x_min = max(0.0, min(1.0, X_lo / H))
+    x_max = max(0.0, min(1.0, X_hi / H))
+    if x_max <= x_min:
+        return hit, None
+    return (replace(hit, x_min_band=x_min, x_max_band=x_max),
+            (L_def, c_phys, (x_max - x_min) * H))
+
+
 def run_forging_series(hits, mesh, problem, sol_u0, sol_dT_initial, H, R,
                        T_linear_fn, db, series_id, save_vtk=False, vtk_dir=None):
     """Execute a single series of hits on the same workpiece.
@@ -221,6 +331,13 @@ def run_forging_series(hits, mesh, problem, sol_u0, sol_dT_initial, H, R,
 
     for hit_idx, hit in enumerate(hits):
         step_number = hit_idx + 1
+        hit, _remap = _remap_band_current(
+            hit, mesh, current_sol_u if hit_idx > 0 else None, H)
+        if _remap is not None:
+            _Ld, _cp, _bw = _remap
+            print(f"  [band] rod L={_Ld:.2f}mm, landing {_cp:.2f}mm "
+                  f"(frac {hit.band_center_frac:.3f}) -> ref band {_bw:.2f}mm "
+                  f"for {hit.band_width_mm:.2f}mm die")
         print(f"\n{'='*80}")
         print(f"  Series {series_id[:8]}... | HIT {step_number}/{len(hits)}")
         print(f"{'='*80}")
@@ -489,8 +606,15 @@ def main(args=None):
 
     # --- Load mesh ---
     print("\nLoading mesh...")
-    mesh_0 = o3d.io.read_triangle_mesh(str(stock_mesh_path))
-    open3d_to_json(mesh_0, json_mesh_path)
+    # Reuse the already-converted json when present: the .obj -> .json step is
+    # the only thing that needs open3d, and it is a pure format conversion.
+    if not os.path.exists(json_mesh_path):
+        if o3d is None:
+            raise RuntimeError(
+                f"open3d is required to convert {stock_mesh_path} but is not "
+                f"installed, and no cached {json_mesh_path} exists.")
+        mesh_0 = o3d.io.read_triangle_mesh(str(stock_mesh_path))
+        open3d_to_json(mesh_0, json_mesh_path)
     stock_mesh = MeshContainer.from_json(json_mesh_path)
     ele_type = "TET4"
     mesh = convert_meshio_to_jaxfem(stock_mesh.vtk, ele_type=ele_type)

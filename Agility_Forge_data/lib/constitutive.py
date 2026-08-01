@@ -121,7 +121,23 @@ class ThermalMechanical(Problem):
 
         sol_dT_old_left = self.fes[1].convert_from_dof_to_face_quad(sol_dT_old, self.boundary_inds_list[0])
         sol_dT_old_right = self.fes[1].convert_from_dof_to_face_quad(sol_dT_old, self.boundary_inds_list[1])
-        self.internal_vars_surfaces = [[sol_dT_old_left], [sol_dT_old_right]]
+
+        # [die-contact] Nodal contact mask -> face quadrature points, so the
+        # surface kernel can switch the die flux off where nothing touches.
+        # Interpolating through the shape functions gives values in [0, 1]
+        # rather than a hard 0/1: a face straddling the edge of the contact
+        # patch gets partial flux, which is both physically sensible and
+        # gentler on Newton than a jump.  Fallback of all-ones reproduces the
+        # previous behaviour for the seed residual evaluation, before
+        # bc_update_fn has run for the first time.
+        contact_mask = getattr(self, "contact_mask_nodes", None)
+        if contact_mask is None:
+            contact_mask = np.ones((self.fes[1].num_total_nodes, 1))
+        mask_left = self.fes[1].convert_from_dof_to_face_quad(contact_mask, self.boundary_inds_list[0])
+        mask_right = self.fes[1].convert_from_dof_to_face_quad(contact_mask, self.boundary_inds_list[1])
+
+        self.internal_vars_surfaces = [[sol_dT_old_left, mask_left],
+                                       [sol_dT_old_right, mask_right]]
 
     def set_timestep(self, dt):
         self.dt = dt
@@ -392,21 +408,25 @@ class ThermalMechanical(Problem):
     # Surface Neumann kernels (thermal convection)
     # =================================================================
     def get_universal_kernels_surface(self):
-        def thermal_neumann(T, old_T_face):
-            h = 10.0   # mW/mm^2-K
-            T0 = 25.
-            q_contact = h * (T0 - T[0])
+        def thermal_neumann(T, old_T_face, contact_mask):
+            # Die-contact heat extraction.  h is the interface conductance and
+            # T0 the platen temperature; the mask (in [0, 1]) restricts the
+            # flux to the part of the candidate band that is actually pressed
+            # against a platen at this step.
+            h = 10.0   # mW/mm^2-K  == 1e4 W/m^2-K, typical die interface
+            T0 = 25.   # platen temperature (deg C)
+            q_contact = contact_mask[0] * h * (T0 - T[0])
             return -np.array([q_contact])
 
         def _surface_kernel(cell_sol_flat, x, face_shape_vals, face_shape_grads,
-                            face_nanson_scale, old_T_face):
+                            face_nanson_scale, old_T_face, contact_mask):
             cell_sol_list = self.unflatten_fn_dof(cell_sol_flat)
             cell_sol_T = cell_sol_list[1]
             face_shape_vals = face_shape_vals[:, -self.fes[1].num_nodes:]
             face_nanson_scale = face_nanson_scale[0]
 
             T = np.sum(cell_sol_T[None, :, :] * face_shape_vals[:, :, None], axis=1)
-            u_physics = jax.vmap(thermal_neumann)(T, old_T_face)
+            u_physics = jax.vmap(thermal_neumann)(T, old_T_face, contact_mask)
             val_T = np.sum(u_physics[:, None, :] * face_shape_vals[:, :, None]
                            * face_nanson_scale[:, None, None], axis=0)
             val_u = np.zeros((self.fes[0].num_nodes, self.fes[0].vec))
@@ -414,14 +434,14 @@ class ThermalMechanical(Problem):
             return jax.flatten_util.ravel_pytree(val)[0]
 
         def convection_neumann_left(cell_sol_flat, x, face_shape_vals, face_shape_grads,
-                                    face_nanson_scale, old_T_left):
+                                    face_nanson_scale, old_T_left, mask_left):
             return _surface_kernel(cell_sol_flat, x, face_shape_vals, face_shape_grads,
-                                   face_nanson_scale, old_T_left)
+                                   face_nanson_scale, old_T_left, mask_left)
 
         def convection_neumann_right(cell_sol_flat, x, face_shape_vals, face_shape_grads,
-                                     face_nanson_scale, old_T_right):
+                                     face_nanson_scale, old_T_right, mask_right):
             return _surface_kernel(cell_sol_flat, x, face_shape_vals, face_shape_grads,
-                                   face_nanson_scale, old_T_right)
+                                   face_nanson_scale, old_T_right, mask_right)
 
         return [convection_neumann_left, convection_neumann_right]
 

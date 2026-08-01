@@ -249,6 +249,22 @@ def build_cylinder_press_bcs(mesh, R, H, hit, current_sol_u=None, T_linear_fn=No
                    u_right[:, 0], u_right[:, 1], u_right[:, 2]]
         problem.fes[0].update_Dirichlet_boundary_conditions([loc_fns, vecs, val_fns])
 
+        # [die-contact] Publish the ACTIVE contact set as a nodal 0/1 field.
+        # The thermal Neumann surface (location_fns_convect) stays STATIC -- the
+        # candidate band -- so no surface integral is rebuilt and nothing is
+        # re-jitted.  Only this mask changes per step, and the surface kernel
+        # multiplies the die-contact flux by it, so heat is drawn only where the
+        # billet actually touches a platen.  Without it the flux was applied to
+        # every candidate node around the FULL circumference (772 nodes vs the
+        # ~160 in contact), i.e. die chilling was spread over ~4.8x too much
+        # area, including the +-z faces the platens never reach.
+        contact_mask = onp.zeros((len(pts), 1), dtype=onp.float64)
+        if len(left_inds):
+            contact_mask[onp.asarray(left_inds), 0] = 1.0
+        if len(right_inds):
+            contact_mask[onp.asarray(right_inds), 0] = 1.0
+        problem.contact_mask_nodes = np.array(contact_mask)
+
         y_L = y_rot_min0 + scale * compression_displacement
         y_R = y_rot_max0 - scale * compression_displacement
         print(f"  [BC step {step_count}] scale={scale:.4f} contact left={len(left_inds)} "
