@@ -27,7 +27,7 @@ class ThermalMechanical(Problem):
         # Define parameters
         self.T0 = 20.0   # ambient temperature, C
         self.E = 196.e3 / (self.S**2)   # young's modulus, MPa
-        self.sig0 = 1172. / (self.S**2)
+        self.sig0 = 1213. / (self.S**2)
         self.nu = 0.272
 
         ### Hu: Reference -- https://www.spacematdb.com/spacemat/manudatasheets/15-5_PH_Data_Sheet.pdf
@@ -48,11 +48,23 @@ class ThermalMechanical(Problem):
         self.Q = 145. / (self.S**2)  # Hardening saturation MPa
         self.b = 25.                 # Hardening rate
 
-        self.yield_stress_temps = np.array([20, 200, 300, 400, 500, 682, 800, 898, 1000, 1100])
-        self.yield_stress_reducs = np.array([1172, 1048, 965, 869, 634, 330, 240, 100., 70., 70]) / 1172.
+        ## For 24~538C, Reference: H925: ARMCO Table 13 – Short-Time Tensile Properties
+        ## For 682~1100C, Reference: Agility Forge Comparison
+        self.yield_stress_temps = np.array([24, 204, 315, 426, 538, 
+                                            682, 800, 898, 1000, 1100])
+        self.yield_stress_reducs = np.array([1213, 1048, 965, 869, 634, 
+                                             330, 240, 100., 70., 70]) / 1213.
 
-        self.modulus_temps = np.array([20, 100, 200, 300, 400, 500, 682, 800, 898, 1000, 1100])
-        self.modulus_reducs = np.array([1., 0.996, 0.978, 0.963, 0.947, 0.930,
+
+        ## For 22~315C, Reference: https://www.spacematdb.com/spacemat/manudatasheets/15-5_PH_Data_Sheet.pdf
+        ## For 400C, Reference: https://www.scribd.com/document/441470740/15-5-PH-technical-data
+        ## For 500C, Reference: https://kaspercalc.com/Chapter2.6%28steel%29.html
+        ## For 682~1100C, Reference: Agility Forge Comparison
+        self.modulus_temps = np.array([22, 38, 93, 149, 204, 260, 315, 
+                                      400, 500, 
+                                      682, 800, 898, 1000, 1100])
+        self.modulus_reducs = np.array([1., 0.996, 0.978, 0.962, 0.947, 0.930, 0.914,
+                                       170/196, 160/196,
                                        90/196, 80/196, 6/196, 5.8/196, 5.8/196])
 
         # High-temperature modulus floor (safety net): clamp the modulus
