@@ -1,1 +1,0 @@
-This folder contains temporary files which are used for meshing. Deleting them might cause the simulation tools to stop working.

@@ -7,10 +7,65 @@ Contains:
 import os
 import time
 import numpy as onp
+import scipy.sparse
+import scipy.sparse.linalg
 import jax.numpy as np
 
+import jax_fem_checkpoint.solver_latest as _sl
 from jax_fem_checkpoint.solver_latest import solver
 from jax_fem_checkpoint.utils import save_sol
+
+
+# =============================================================================
+# Hybrid linear solver (runtime rebinding; jax_fem_checkpoint is not modified)
+# =============================================================================
+HYBRID_STATS = {"solves": 0, "fallbacks": 0}
+
+# Room temperature (C) toward which the phenomenological surface cooling of
+# ``AutomaticTimeStepperTM.run`` relaxes the surface nodes.
+T_ROOM = 20.0
+
+
+def use_hybrid_linear_solver(rel_tol=1e-6):
+    """bicgstab first; redo the solve with a sparse LU when its residual fails.
+
+    The package's ``jax_solve`` is an unpreconditioned bicgstab whose
+    convergence check is commented out, so a failed linear solve is returned
+    as if it had succeeded and Newton then works from a corrupted increment.
+    Newton's own residual check catches most of these as "not converged" and
+    costs a retry; a few can pass the loose absolute tolerance.  This wrapper
+    measures ``|A x - b|`` after every solve and falls back to
+    ``scipy.sparse.linalg.spsolve`` when it exceeds ``rel_tol * |b|``.  The
+    direct solve is exact, so a fallback can never return a wrong increment.
+    """
+    if getattr(_sl, "_agf_hybrid_installed", False):
+        return
+    _inner = _sl.linear_solver
+
+    def _hybrid(A, b, x0, solver_options):
+        x = _inner(A, b, x0, solver_options)
+        HYBRID_STATS["solves"] += 1
+        if "jax_solver" not in solver_options:
+            return x
+        try:
+            res = float(np.linalg.norm(A @ x - b))
+            nb = float(np.linalg.norm(b))
+        except Exception:                                   # noqa: BLE001
+            return x
+        if onp.isfinite(res) and res <= rel_tol * max(nb, 1.0):
+            return x
+        HYBRID_STATS["fallbacks"] += 1
+        idx = onp.asarray(A.indices)
+        A_csc = scipy.sparse.csr_matrix(
+            (onp.asarray(A.data), (idx[:, 0], idx[:, 1])), shape=A.shape).tocsc()
+        x_d = scipy.sparse.linalg.spsolve(A_csc, onp.asarray(b, dtype=onp.float64))
+        res_d = float(onp.linalg.norm(A_csc @ x_d - onp.asarray(b)))
+        print(f"  [hybrid] bicgstab residual {res:.3e} > {rel_tol:.0e} * |b|={nb:.3e}; "
+              f"direct solve residual {res_d:.3e}")
+        return np.asarray(x_d)
+
+    _sl.linear_solver = _hybrid
+    _sl._agf_hybrid_installed = True
 
 
 class AutomaticTimeStepperTM:
@@ -40,7 +95,26 @@ class AutomaticTimeStepperTM:
         cool_factor=1.0,
         surface_inds=None,
     ):
+        """
+        The plasticity history (``update_int_vars_gp``) is committed with the
+        quadrature temperature and time step the step's residual was built
+        from (``problem.internal_vars[5:8]``), so the committed plastic state
+        is the one that satisfied equilibrium.  (The original code passed the
+        ``T_old``/``dt`` slots of the carried tuple, which are never written
+        after ``custom_init``: T = 0 C and dt = 0.1 s.)
+
+        Every linear solve goes through ``use_hybrid_linear_solver``: the
+        package's bicgstab is checked and a failed solve is redone with a
+        sparse LU.
+        """
         self.problem = problem
+        use_hybrid_linear_solver()
+        # Internal force at the last accepted step (die reaction at the
+        # constrained dofs), and Newton iterations per accepted step.
+        self.last_res_u = None
+        self.last_T_old = None
+        self.last_dt = None
+        self.iters_hist = []
         self.total_time = float(total_time)
         self.dt = float(initial_dt)
         self.min_dt = float(min_dt)
@@ -120,10 +194,11 @@ class AutomaticTimeStepperTM:
           duration of the current hit.
         - During each while-loop iteration ``self.dt`` may be modified by retries
           or by the increase_factor logic.  Immediately after ``dt_this`` is
-          computed the code applies a simple cooling law to the nodes listed in
-          ``self.surface_inds``:
-              self.sol_list[1][self.surface_inds] *=
-                  0.99**(dt_this/self.cool_factor)
+          computed the code applies a simple (phenomenological) cooling law to
+          the nodes listed in ``self.surface_inds``: their temperature relaxes
+          toward room temperature ``T_ROOM``,
+              T <- T_ROOM + (T - T_ROOM) * 0.99**(dt_this/self.cool_factor)
+          (the original law multiplied T itself, i.e. relaxed toward 0 C).
           ``cool_factor`` can be tuned when the stepper is constructed.
         """
         if rho_ini is None:
@@ -149,7 +224,8 @@ class AutomaticTimeStepperTM:
                     print("Applying cooling", "dt_this:", dt_this, "cool_factor:", self.cool_factor)
                     coeff = 0.99 ** (dt_this / self.cool_factor)
                     arr = np.array(self.sol_list[1])
-                    arr = arr.at[self.surface_inds].multiply(coeff)
+                    arr = arr.at[self.surface_inds].set(
+                        T_ROOM + (arr[self.surface_inds] - T_ROOM) * coeff)
                     self.sol_list[1] = arr
                     self.sol_dT = arr
                 except Exception as _e:
@@ -263,6 +339,24 @@ class AutomaticTimeStepperTM:
 
                     self.sol_list = new_sol_list
                     self.sol_u, self.sol_dT = new_sol_list
+                    self.iters_hist.append(int(iteration_counter))
+                    # The fields this step's residual was built with, so a
+                    # later consistency check can reproduce it exactly.
+                    self.last_T_old = sol_dT_old
+                    self.last_dt = dt_this
+
+                    # Internal force at the converged state, with the step's
+                    # own parameters still installed.  At a Dirichlet dof it
+                    # is the reaction; the unloading phase between hits
+                    # releases exactly this force.
+                    try:
+                        if hasattr(self.problem, "internal_force"):
+                            self.last_res_u = self.problem.internal_force(new_sol_list)[0]
+                        else:
+                            self.last_res_u = self.problem.compute_residual(new_sol_list)[0]
+                    except Exception as _e:                      # noqa: BLE001
+                        print("Warning: failed to capture the internal force", _e)
+                        self.last_res_u = None
 
                     print("** Update internal variables after convergence")
 
@@ -275,7 +369,15 @@ class AutomaticTimeStepperTM:
 
                     # Update internal variables after convergence
                     a1, a2, a3, a4, a5, a6, a7, a8 = self.int_vars
-                    int_vars_u = self.problem.update_int_vars_gp(self.sol_u, self.int_vars)
+                    # The residual of this step was built with
+                    # problem.internal_vars = [a1..a5, thetas, T_old_q, dt_q]
+                    # (set by set_params / set_timestep); commit the history
+                    # with the same fields.
+                    iv_step = (a1, a2, a3, a4, a5,
+                               self.problem.internal_vars[5],
+                               self.problem.internal_vars[6],
+                               self.problem.internal_vars[7])
+                    int_vars_u = self.problem.update_int_vars_gp(self.sol_u, iv_step)
                     a1_updated, a2_updated, a3_updated, a4_updated, a5_updated, _ = int_vars_u
                     self.int_vars = (a1_updated, a2_updated, a3_updated, a4_updated, a5_updated, a6, a7, a8)
 

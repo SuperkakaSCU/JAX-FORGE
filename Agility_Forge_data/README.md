@@ -6,8 +6,12 @@ generate (input state, hit parameters) -> (output state) training pairs.
 Each *hit* presses two rigid platens into the bar over a narrow axial band, then
 the bar is rotated about its axis before the next hit. Contact is re-detected at
 every load step from the current deformed shape (updated-Lagrangian), so material
-pushed away from a platen is released automatically. Between hits the temperature
-is relaxed back towards the initial profile.
+pushed away from a platen is released automatically; a captured node keeps its
+tangential position (no slip) and the die only pushes. Between hits the die is
+released gradually and the temperature is relaxed back towards the initial
+profile.
+
+This README describes version 9 (the model of November 2026, §7).
 
 ---
 
@@ -20,7 +24,8 @@ Run from the **repository root** (the directory containing `applications/` and
 python -m applications.Agility_Forge_data.main -s one_press -n 1 --no-noise --save-vtk
 ```
 
-That is 5 hits, ~12 min on GPU. Results go to
+That is 5 hits, about 30 min on one H100 (version 9: 28 min measured for a
+noisy `one_press` series). Results go to
 
 ```
 applications/Agility_Forge_data/data/vtk_one_press_s0000/hit_<N>/tm_<step>.vtu
@@ -28,8 +33,54 @@ applications/Agility_Forge_data/data/forge_database.db
 ```
 
 Each `.vtu` carries `Displacement` (mm) and `Temperature` (deg C) on 7533 nodes.
+VTK output is off by default (`run.save_vtk: false`); the database is always
+written.
 
-## 2. Command-line options
+The database (SQLite) has a `series` table (sequence, planned hits, status) and
+a `hits` table with one row per hit: the band (`x_min_band`, `x_max_band`, as
+fractions of H on the reference bar), the bite (`compression_displacement`, mm
+per side), the die angle (`rotation_euler_x`, deg), and the nodal displacement
+and temperature before the hit (`input_*`) and at its end (`result_*`, die
+still closed; the release belongs to the next hit), stored as JSON arrays.
+
+## 2. Results (version 9 test, 2026-11-12)
+
+One noisy series of every sequence (`-n 1 --noise --seed 42`, no VTK, one H100
+per batch): every sequence completed all its hits, 143 hits in total.
+
+| sequence | hits | wall time | GIF |
+|---|---:|---:|---|
+| `one_press` | 5 | 0.46 h | `data/data_one_press_v9.gif` |
+| `press_rotate` | 10 | 0.97 h | `data/data_press_rotate_v9.gif` |
+| `progressive` | 20 | 2.11 h | `data/data_progressive_v9.gif` |
+| `heavy_forge` | 40 | 4.20 h | `data/data_heavy_forge_v9.gif` |
+| `s_baseline` | 10 | 0.98 h | `data/data_s_baseline_v9.gif` |
+| `s_edge_low` | 8 | 0.97 h | `data/data_s_edge_low_v9.gif` |
+| `s_edge_high` | 8 | 0.75 h | `data/data_s_edge_high_v9.gif` |
+| `s_norot` | 10 | 0.97 h | `data/data_s_norot_v9.gif` |
+| `b_baseline` | 10 | 1.85 h | `data/data_b_baseline_v9.gif` |
+| `b_concentrated` | 8 | 1.70 h | `data/data_b_concentrated_v9.gif` |
+| `b_edge` | 8 | 1.42 h | `data/data_b_edge_v9.gif` |
+| `b_extreme` | 6 | 1.42 h | `data/data_b_extreme_v9.gif` |
+
+Each GIF is drawn from the database: the bar before hit 1 and after every hit,
+coloured by temperature (left) and by the total equivalent strain computed from
+the displacement (right; the database stores no plastic strain), the hit's band
+marked by dashed lines. Below, per hit: the bite commanded and the bite measured
+on the bar (half the loss of section thickness across the band along the die
+normal; it is measured from the previous hit's end state, die still closed, so
+a repeat hit on the same spot reads low by that spot's springback), the
+temperature after the hit, and the strain.
+
+`heavy_forge`, 40 hits:
+
+![heavy_forge](data/data_heavy_forge_v9.gif)
+
+`b_baseline`, 10 large-strain hits:
+
+![b_baseline](data/data_b_baseline_v9.gif)
+
+## 3. Command-line options
 
 Every flag overrides the matching entry in `configs/forging.yml`; omit it to keep
 the YAML value.
@@ -47,10 +98,11 @@ the YAML value.
 Use `--no-noise` for reproducible single runs; leave noise on when generating
 training data.
 
-## 3. Available sequences
+## 4. Available sequences
 
-Stock is 96.52 mm long with a 15.9 x 15.9 mm cross-section; the die footprint is
-19.3 mm (`scan.band_width_mm`).
+The bar is a cylinder of 15.9 mm diameter; its forgeable span is x = 0 ... 96.52
+mm (a 5 mm stub at x < 0 is the held end). The die footprint is 19.3 mm
+(`scan.band_width_mm`).
 
 ### Data-generation sequences
 
@@ -86,24 +138,26 @@ limits. `bite %` is the fraction of the 15.9 mm section removed per hit.
 | `b_extreme` | 6 | 3.50 mm (22.0%) | 0.5 ... 0.7 | convergence limit |
 
 ```bash
-# small-strain regression (~25 min on GPU)
+# small-strain regression (~1 h on one H100)
 python -m applications.Agility_Forge_data.main -s s_baseline -n 1 --no-noise --save-vtk
 
-# large-strain regression (~65 min on GPU)
+# large-strain regression (~1.9 h on one H100)
 python -m applications.Agility_Forge_data.main -s b_baseline -n 1 --no-noise --save-vtk
 
 # all four small-strain scenarios in one go
 python -m applications.Agility_Forge_data.main -s s_baseline s_edge_low s_edge_high s_norot -n 1 --no-noise --save-vtk
 ```
 
-Expected outcome (measured, no noise, GPU): all pass except `b_concentrated`,
-which stops at hit 8 during the inter-hit thermal relaxation. That is not a
-solver defect: 8 x 2.50 mm = 20 mm of cumulative bite on a single spot exceeds
-the 15.9 mm section, the cross-section is squeezed to 16.2 x 21.8 mm and the
-smallest element is down to 31% of its original volume. `b_edge` applies the same
-bite at a different landing point and completes normally.
+Expected outcome (version 9, measured, see §2): all eight complete.
+`b_concentrated` is the hardest: hit 8 needed one step-halving, and 8 x 2.50 mm
+= 20 mm of cumulative bite on a single spot exceeds the 15.9 mm section, so the
+mesh under the die is severely distorted by then; deeper or longer variants of
+it may stop on element quality, which is a limit of the mesh, not a solver
+defect. (With the version 8 model it stopped at hit 8, during the
+inter-hit thermal relaxation.) `b_edge` applies the same bite at a different
+landing point.
 
-## 4. Configuring your own sequence
+## 5. Configuring your own sequence
 
 Add a block to `configs/forging.yml`:
 
@@ -141,7 +195,7 @@ Two warnings can appear and are worth reading:
   step-halving events over 8 hits; the mirrored case at the free end produced
   none. Keep the lower bound at 0.3 or above unless you specifically want this.
 
-## 5. How the die follows the bar
+## 6. How the die follows the bar
 
 The bar elongates as it is forged (up to +17% in `b_baseline`), so the die
 position and width are recomputed before every hit rather than being fixed to the
@@ -164,3 +218,46 @@ Each hit prints the result:
 ```
 
 
+
+## 7. Model corrections (November 2026)
+
+The model carries the corrections of `Agility_Forge_physforge` (its README,
+§2a, has the defects, the fixes and the measurements). They are built in; there
+are no switches to restore the previous behaviour. The code before
+2026-11-09 is kept outside the repository.
+**Every series generated before these corrections was computed with the
+previous model.**
+
+| correction | since |
+|---|---|
+| die heat flux only on the faces in contact (nodal contact mask) | before Nov 2026 |
+| heat capacity and die transfer lumped onto the nodes; thermal terms use the step's own dt; reference-normal area weights (physforge #6-#8) | 2026-11-05 |
+| plasticity history committed with the step's own temperature and dt, not T = 0 C, dt = 0.1 s (physforge #4) | 2026-11-09 |
+| every bicgstab solve checked, failed ones redone with a sparse LU (physforge #5) | 2026-11-09 |
+| the die only pushes: a captured node that does not penetrate is pinned, not pulled onto the platen plane (physforge #2) | 2026-11-09 |
+| between hits the contact is released gradually ("peel": contact nodes freed outermost first, the rest pinned where the hit left them, the rotation about x held at its current value), then the reheat ramp runs contact-free and the next hit's rows are built on the released surface; previously the rows were dropped at once on the first reheat step (physforge #3) | 2026-11-09 |
+| the die flux only on true boundary faces; interior faces with all vertices in the die node set took it too (physforge #9) | 2026-11-09 |
+| the phenomenological surface cooling relaxes the surface toward 20 C, not 0 C (physforge #10) | 2026-11-09 |
+
+`lib/constitutive.py` and `lib/time_stepper.py` are identical to physforge's up to
+the package name. The release (`build_unload_bcs`) and the die-contact targets
+were checked function by function against physforge's on the same mesh and
+inputs: identical (internal validation, not in the repository).
+This package keeps its own mapping of the commanded band onto the deformed bar
+(§6) and has no force-controlled release or checkpoints.
+
+Effect on a `one_press` series (5 hits, 7533 nodes, GPU, 16 steps per hit in
+every run; runs `dt_before`, `dt_A` (ported fixes), `dt_C` (ported fixes +
+interior faces + 20 C); internal validation, not in the repository):
+
+| hit | ported fixes vs before: max `|du|` (mm) / max `|dT|` (C) | interior faces + 20 C vs ported: max `|du|` (mm) / max `|dT|` (mean) (C) |
+|---|---|---|
+| 1 | 0.118 / 40.2 | 0.003 / 70.6 (0.07) |
+| 2 | 0.184 / 39.7 | 0.003 / 57.3 (0.05) |
+| 3 | 0.216 / 52.4 | 0.002 / 0.04 (0.02) |
+| 4 | 0.179 / 59.9 | 0.002 / 0.04 (0.02) |
+| 5 | 0.181 / 63.0 | 0.002 / 0.04 (0.02) |
+
+`|u|_inf` is 1.3-1.5 mm.  The die surfaces drop 10-20 interior faces of
+676-710 selected; the temperature changes only in hits 1 and 2 (the reheat
+between hits resets it, so the change does not carry over).

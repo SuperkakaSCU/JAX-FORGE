@@ -9,6 +9,7 @@ material that is pushed away is released automatically.
 
 Contains:
   - build_cylinder_press_bcs:  per-hit dynamic-contact Dirichlet + thermal BC
+  - build_unload_bcs:  displacement-controlled release of the die between hits
   - refresh_problem_surface_integrals:  recompute surface data after
       location_fns change
 """
@@ -55,8 +56,10 @@ def build_cylinder_press_bcs(mesh, R, H, hit, current_sol_u=None, T_linear_fn=No
       * A candidate node (outer-surface node inside the axial x-band) is in
         contact when its current rotated normal coordinate has reached /
         penetrated the moving platen plane.
-      * Each contacting node is projected back onto the platen plane while
-        keeping its current tangential position (frictional-stick increment).
+      * Each contacting node keeps its current tangential position
+        (frictional-stick increment); its normal target is clamped so the die
+        only pushes: a node that penetrates the platen goes back to the plane,
+        a captured node that does not penetrate is pinned where it is.
       * Non-contacting nodes are left free, so material pushed away from the
         platen is released automatically.
 
@@ -207,17 +210,25 @@ def build_cylinder_press_bcs(mesh, R, H, hit, current_sol_u=None, T_linear_fn=No
         left_inds = candidate_inds[left_loc]
         right_inds = candidate_inds[right_loc]
 
-        # project onto platen plane: keep current tangential, set normal to plane
-        def _targets(loc, y_plane):
+        # Keep the current tangential position; the normal target is clamped
+        # so the constraint only ever moves a node INTO the body: the lower
+        # platen occupies y < y_L, so admissible material has y >= y_L and the
+        # target is max(y, y_L); the upper platen gives min(y, y_R).  A captured
+        # node that is not penetrating is pinned where it is rather than
+        # dragged out to the plane (projecting every node of the tol_contact
+        # capture layer onto the plane pulled the workpiece outward).
+        def _targets(loc, y_plane, side):
             if len(loc) == 0:
                 return onp.zeros((0, 3), dtype=pts.dtype)
             target_rot = xdef_cand_rot[loc].copy()
-            target_rot[:, 1] = y_plane
+            y_now = target_rot[:, 1]
+            target_rot[:, 1] = (onp.maximum(y_now, y_plane) if side == "left"
+                                else onp.minimum(y_now, y_plane))
             u_rot = target_rot - X_cand_rot[loc]     # total displacement (rotated)
             return to_global_vectors(u_rot)          # -> global frame
 
-        u_left = _targets(left_loc, y_L)
-        u_right = _targets(right_loc, y_R)
+        u_left = _targets(left_loc, y_L, "left")
+        u_right = _targets(right_loc, y_R, "right")
         return left_inds, right_inds, u_left, u_right
 
     # ----- initial placeholder BC (scale = 0 on current deformed config) -----
@@ -264,6 +275,10 @@ def build_cylinder_press_bcs(mesh, R, H, hit, current_sol_u=None, T_linear_fn=No
         if len(right_inds):
             contact_mask[onp.asarray(right_inds), 0] = 1.0
         problem.contact_mask_nodes = np.array(contact_mask)
+        # Published so the release between hits knows which nodes carried the
+        # die at the end of this hit.
+        problem.contact_left_inds = onp.asarray(left_inds)
+        problem.contact_right_inds = onp.asarray(right_inds)
 
         y_L = y_rot_min0 + scale * compression_displacement
         y_R = y_rot_max0 - scale * compression_displacement
@@ -313,6 +328,150 @@ def build_cylinder_press_bcs(mesh, R, H, hit, current_sol_u=None, T_linear_fn=No
 
 
 # =============================================================================
+# Release of the die between hits
+# =============================================================================
+def build_unload_bcs(mesh, sol_u, left_inds, right_inds, rot_deg=0.0, verbose=True):
+    """Displacement-controlled ("peel") release of the die between two hits.
+
+    Ported from Agility_Forge_physforge (lib/boundary_conditions.py,
+    ``build_unload_bcs`` with ``mode="peel"`` and the "face" rigid-body rows,
+    which are the rows ``build_cylinder_press_bcs`` installs here).  Every node
+    that is in contact at the end of the hit gets a rank in [0, 1), by distance
+    from its platen patch's centroid in the die plane, outermost first (the
+    order a real contact separates in).  At release fraction ``s`` the nodes
+    with rank below ``s`` are free and the others are PINNED (all three
+    components) where the hit left them; at ``s = 1`` the body is free.  The
+    band is thus held kinematically until the last increment.  Dropping all the
+    contact rows at once (the previous transition) asked Newton to recover the
+    whole springback in one solve.
+
+    The end-face rows (ux on x = x_min, uy and uz on the pin) leave the rotation
+    about x free; during a hit the platens hold it, but with no contact it is a
+    zero-energy mode and the tangent is singular.  One end-face node far from
+    the pin therefore gets its ``uy`` HELD AT ITS CURRENT VALUE, which removes
+    the mode without moving anything.  The die heat-flux mask is zero.
+
+    Returns ``(dirichlet_bc_info_u, bc_update_fn(problem, sol_u, step_count, scale))``.
+    """
+    pts = onp.array(mesh.points)
+    n_nodes = len(pts)
+    x_bottom = float(pts[:, 0].min())
+    y_min_initial = float(pts[:, 1].min())
+
+    def bottom_face(p):
+        return np.isclose(p[0], x_bottom, atol=1e-5)
+
+    pin_id = onp.argmin((pts[:, 0] - x_bottom) ** 2 + (pts[:, 1] - y_min_initial) ** 2
+                        + (pts[:, 2] - 0.0) ** 2)
+    pin_point = pts[pin_id]
+
+    def pin_node(p):
+        return (np.abs(p[0] - pin_point[0]) < 1e-12) & \
+               (np.abs(p[1] - pin_point[1]) < 1e-12) & \
+               (np.abs(p[2] - pin_point[2]) < 1e-12)
+
+    def zero_val(p):
+        return 0.0
+
+    face = onp.where(onp.abs(pts[:, 0] - x_bottom) <= 1e-5)[0]
+    iQ = int(face[onp.argmax(onp.abs(pts[face, 2] - float(pin_point[2])))])
+    u_hold = onp.asarray(sol_u, dtype=onp.float64)
+    uy_hold = float(u_hold[iQ, 1])
+
+    def hold_val(p, _v=uy_hold):
+        return _v
+
+    rb_locs = [bottom_face, pin_node, pin_node, onp.array([iQ], dtype=onp.int32)]
+    rb_vecs = [0, 1, 2, 1]
+    rb_vals = [zero_val, zero_val, zero_val, hold_val]
+
+    Rm = onp.asarray(Rotation.from_euler("x", float(rot_deg), degrees=True).as_matrix())
+    x_def_rot = (pts + u_hold) @ Rm.T
+    rank = onp.full(n_nodes, -1.0)
+    for idx in (onp.asarray(left_inds, dtype=int), onp.asarray(right_inds, dtype=int)):
+        if len(idx) == 0:
+            continue
+        fpts = x_def_rot[idx][:, [0, 2]]                 # along the die, across it
+        d = onp.linalg.norm(fpts - fpts.mean(axis=0), axis=1)
+        order = onp.argsort(-d)                          # farthest from the centre first
+        r = onp.empty(len(idx))
+        r[order] = onp.arange(len(idx)) / float(len(idx))
+        rank[idx] = r
+    held0 = onp.where(rank >= 0.0)[0]
+    if verbose:
+        print(f"[unload] peel: {len(held0)} contact nodes released outermost-first; "
+              f"rotation about x held by pinning uy of node {iQ} at {uy_hold:+.4f} mm")
+
+    def bc_update_fn(problem, sol_u_now, step_count, scale):
+        held = onp.where((rank >= 0.0) & (rank >= float(scale)))[0].astype(onp.int32)
+        locs = list(rb_locs) + [held, held, held]
+        vecs = list(rb_vecs) + [0, 1, 2]
+        vals = list(rb_vals) + [u_hold[held, 0], u_hold[held, 1], u_hold[held, 2]]
+        problem.fes[0].update_Dirichlet_boundary_conditions([locs, vecs, vals])
+        problem.contact_mask_nodes = np.zeros((n_nodes, 1))
+        problem.contact_left_inds = onp.zeros((0,), dtype=int)
+        problem.contact_right_inds = onp.zeros((0,), dtype=int)
+        if verbose:
+            print(f"  [unload step {step_count}] s={float(scale):.4f} "
+                  f"held={len(held)} of {len(held0)}")
+
+    return [list(rb_locs), list(rb_vecs), list(rb_vals)], bc_update_fn
+
+
+# =============================================================================
+# Face area weights
+# =============================================================================
+def reference_nanson_scale(fe, boundary_inds):
+    """Area weights of the selected faces (num_selected_faces, num_face_quads).
+
+    Nanson's formula, da = det(J) |N . J^-1| dA, with N the REFERENCE facet
+    normal.  ``FiniteElement.get_face_shape_grads`` in jax_fem_checkpoint uses the
+    physical face normal for N, which is right only where the reference and
+    physical axes coincide (an axis-aligned HEX8); on TET4 it over-counts.  The
+    sum over a face of these weights equals its geometric area.  jax_fem_checkpoint
+    is shared with other applications and is not modified here.
+    """
+    inds = onp.asarray(boundary_inds)
+    coos = onp.take(onp.asarray(fe.points), onp.asarray(fe.cells), axis=0)[inds[:, 0]]
+    grads = onp.asarray(fe.face_shape_grads_ref)[inds[:, 1]]
+    J = onp.sum(coos[:, None, :, :, None] * grads[:, :, :, None, :], axis=2)
+    N = onp.asarray(fe.face_normals)[inds[:, 1]]
+    # The sign of the owner cell's volume weights.  On HEX8, jax_fem_checkpoint's
+    # volume shape functions (basis_new.py, re_order) give det J < 0 on a
+    # right-handed mesh, so every JxW is negative, which only flips the sign of whole
+    # volume terms; its face shape functions give det J > 0.  A positive surface
+    # weight would then enter with the opposite sign to the volume terms: the die
+    # would heat the bar.  TET4: +1.
+    vol_sign = onp.sign(onp.asarray(fe.JxW)[inds[:, 0], 0])[:, None]
+    return (onp.linalg.norm((N[:, None, None, :] @ onp.linalg.inv(J))[:, :, 0, :], axis=-1)
+            * onp.abs(onp.linalg.det(J))
+            * onp.asarray(fe.face_quad_weights)[inds[:, 1]]
+            * vol_sign)
+
+
+# =============================================================================
+# True boundary faces
+# =============================================================================
+def true_boundary_face_flags(fe):
+    """(num_cells, num_faces_per_cell) bool: the face belongs to this cell only.
+
+    ``FiniteElement.get_boundary_conditions_inds`` (jax_fem_checkpoint) selects
+    every face of every cell whose vertices all satisfy the location function
+    and never checks that the face is on the boundary.  The surface location
+    functions of this package test NODE SETS (``np.isin(ind, ...)``), so an
+    interior face whose vertices are all in the set was selected too -- and,
+    being shared by two cells, counted twice -- which multiplied the area of
+    the die heat flux (box mesh 1.77 x, rect meshes 1.25-1.49 x the true area).
+    A face shared by two cells is interior; a face of one cell only is on the
+    boundary.
+    """
+    cfi = onp.take(onp.asarray(fe.cells), onp.asarray(fe.face_inds), axis=1)  # (nc, nf, nv)
+    keys = onp.sort(cfi.reshape(-1, cfi.shape[-1]), axis=1)
+    _, inv, cnt = onp.unique(keys, axis=0, return_inverse=True, return_counts=True)
+    return (cnt[onp.asarray(inv).reshape(-1)] == 1).reshape(cfi.shape[:2])
+
+
+# =============================================================================
 # Refresh surface integrals after location_fns change
 # =============================================================================
 def refresh_problem_surface_integrals(problem):
@@ -323,7 +482,22 @@ def refresh_problem_surface_integrals(problem):
     ``nanson_scale``, ``selected_face_shape_vals``, ``physical_surface_quad_points``,
     ``I``, ``J`` indices, and then calls ``pre_jit_fns()`` to rebuild JITted kernels.
     """
-    problem.boundary_inds_list = problem.fes[0].get_boundary_conditions_inds(problem.location_fns)
+    selected = problem.fes[0].get_boundary_conditions_inds(problem.location_fns)
+    # keep only the faces on the true boundary (see true_boundary_face_flags);
+    # the connectivity does not change in this package, so the flags are cached
+    fe0 = problem.fes[0]
+    flags = getattr(problem, "_true_boundary_faces", None)
+    if flags is None or flags.shape[0] != fe0.num_cells:
+        flags = true_boundary_face_flags(fe0)
+        problem._true_boundary_faces = flags
+    problem.boundary_inds_list = []
+    for k, b in enumerate(selected):
+        b = onp.asarray(b)
+        keep = flags[b[:, 0], b[:, 1]] if len(b) else onp.zeros((0,), dtype=bool)
+        if len(b) and not keep.all():
+            print(f"  [surface] location {k}: {int(keep.sum())} of {len(b)} selected faces "
+                  f"are on the boundary; {int((~keep).sum())} interior faces dropped")
+        problem.boundary_inds_list.append(b[keep])
 
     # Rebuild I and J sparse matrix indices
     def find_ind(*x):
@@ -363,7 +537,10 @@ def refresh_problem_surface_integrals(problem):
         n_scale = []
         s_shape_vals = []
         for fe in problem.fes:
-            face_shape_grads_physical, nanson_scale_i = fe.get_face_shape_grads(boundary_inds)
+            # the library's area weights are replaced by the reference-normal
+            # ones (see reference_nanson_scale); its shape gradients are kept
+            face_shape_grads_physical, _ = fe.get_face_shape_grads(boundary_inds)
+            nanson_scale_i = reference_nanson_scale(fe, boundary_inds)
             selected_face_shape_vals_i = fe.face_shape_vals[boundary_inds[:, 1]]
             s_shape_grads.append(face_shape_grads_physical)
             n_scale.append(nanson_scale_i)

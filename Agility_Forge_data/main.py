@@ -59,7 +59,8 @@ from applications.Agility_Forge_data.mesh_container import MeshContainer
 from applications.Agility_Forge_data.hit_config import Hit
 from applications.Agility_Forge_data.lib.constitutive import ThermalMechanical
 from applications.Agility_Forge_data.lib.time_stepper import AutomaticTimeStepperTM
-from applications.Agility_Forge_data.lib.boundary_conditions import build_cylinder_press_bcs, refresh_problem_surface_integrals
+from applications.Agility_Forge_data.lib.boundary_conditions import (
+    build_cylinder_press_bcs, build_unload_bcs, refresh_problem_surface_integrals)
 from applications.Agility_Forge_data.data_storage import ForgingDBMS
 
 
@@ -296,14 +297,51 @@ def _remap_band_current(hit, mesh, current_sol_u, H):
             (L_def, c_phys, (x_max - x_min) * H))
 
 
+def run_unloading(problem, mesh, sol_u, sol_dT, int_vars, n_steps=10, total_time=1e-3,
+                  rot_deg=0.0):
+    """Release the previous hit's die contact gradually ("peel", see
+    ``build_unload_bcs``), ported from Agility_Forge_physforge: the nodes in
+    contact at the end of the hit are freed outermost first over ``n_steps``
+    increments while the others stay pinned where the hit left them.
+
+    Returns ``(ok, sol_u, sol_dT, int_vars, bc_update_fn)``; the last item
+    installs the contact-free configuration (use it with ``scale = 1`` for the
+    reheat ramp that follows).
+    """
+    left = getattr(problem, "contact_left_inds", onp.zeros((0,), dtype=int))
+    right = getattr(problem, "contact_right_inds", onp.zeros((0,), dtype=int))
+    dbc_u, bc_update = build_unload_bcs(mesh, sol_u, left, right, rot_deg=rot_deg)
+    problem.dirichlet_bc_info = [dbc_u, None]
+    dt0 = float(total_time) / int(n_steps)
+    stepper = AutomaticTimeStepperTM(
+        problem, total_time=float(total_time), initial_dt=dt0,
+        min_dt=dt0 / 2 ** 8, max_dt=dt0, max_retries=10,
+        increase_factor=1.0, decrease_factor=0.5, line_search_after=0,
+        cool_factor=0.0, surface_inds=None)
+    stepper.seed_state(np.array(sol_u), np.array(sol_dT), int_vars)
+    ok = stepper.run(bc_update_fn=bc_update,
+                     bc_params_fn=lambda step, scale: (step, scale),
+                     rho_ini=np.array([1.0, 1.0, 1.0, 1.0]), vtk_dir=None, save_every=1)
+    if ok:
+        du = onp.asarray(stepper.sol_u) - onp.asarray(sol_u)
+        print(f"  [unload] released in {stepper.step_count} steps; Newton iterations "
+              f"per step {stepper.iters_hist}; springback |du|_inf = "
+              f"{float(onp.abs(du).max()):.4f} mm")
+    else:
+        print("  [unload] FAILED")
+    return ok, stepper.sol_u, stepper.sol_dT, stepper.int_vars, bc_update
+
+
 def run_forging_series(hits, mesh, problem, sol_u0, sol_dT_initial, H, R,
                        T_linear_fn, db, series_id, save_vtk=False, vtk_dir=None):
     """Execute a single series of hits on the same workpiece.
 
     State carried across hits: F, alpha (plasticity history) and displacement.
-    Between hits (Version 8): temperature is reset to the initial profile via a
-    10-step thermal-state relaxation ramp (mechanical re-equilibration at
-    scale=0), then the contact BC is rebuilt on the post-relaxation surface.
+    Between hits: the previous hit's die contact is released gradually
+    (run_unloading, "peel"), the temperature is reset to the initial profile
+    via a 10-step thermal-state relaxation ramp (contact-free mechanical
+    re-equilibration), then the contact BC is built on the post-relaxation
+    surface.
     Contact follows Route B (Updated-Lagrangian dynamic contact, re-detected
     every load step).
 
@@ -328,6 +366,7 @@ def run_forging_series(hits, mesh, problem, sol_u0, sol_dT_initial, H, R,
     current_sol_u = sol_u0
     current_sol_dT = np.array(sol_dT_initial)
     current_int_vars = problem.internal_vars
+    prev_rot = 0.0               # rotation of the previous hit, for the peel order
 
     for hit_idx, hit in enumerate(hits):
         step_number = hit_idx + 1
@@ -350,22 +389,32 @@ def run_forging_series(hits, mesh, problem, sol_u0, sol_dT_initial, H, R,
         input_u = current_sol_u
         input_T = current_sol_dT
 
-        # Build BCs for this hit
-        current_sol_u_for_bc = current_sol_u if hit_idx > 0 else None
-        try:
-            dirichlet_bc_info_u, dirichlet_bc_info_T, location_fns_convect, \
-                bc_update_fn, surface_inds = \
-                build_cylinder_press_bcs(mesh, R=R, H=H, hit=hit,
-                                         current_sol_u=current_sol_u_for_bc,
-                                         T_linear_fn=T_linear_fn)
-        except Exception as e:
-            print(f"  [ERROR] BC construction failed: {e}")
-            db.fail_series(series_id, step_number)
-            return False
+        # Build BCs for the first hit; later hits first release the previous
+        # hit's contact (peel), then run the reheat ramp contact-free, and build
+        # their BCs on the post-relaxation surface below.
+        if hit_idx == 0:
+            try:
+                dirichlet_bc_info_u, dirichlet_bc_info_T, location_fns_convect, \
+                    bc_update_fn, surface_inds = \
+                    build_cylinder_press_bcs(mesh, R=R, H=H, hit=hit,
+                                             current_sol_u=None,
+                                             T_linear_fn=T_linear_fn)
+            except Exception as e:
+                print(f"  [ERROR] BC construction failed: {e}")
+                db.fail_series(series_id, step_number)
+                return False
 
-        problem.dirichlet_bc_info = [dirichlet_bc_info_u, dirichlet_bc_info_T]
-        problem.location_fns = location_fns_convect
-        refresh_problem_surface_integrals(problem)
+            problem.dirichlet_bc_info = [dirichlet_bc_info_u, dirichlet_bc_info_T]
+            problem.location_fns = location_fns_convect
+            refresh_problem_surface_integrals(problem)
+        else:
+            ok_unl, current_sol_u, current_sol_dT, current_int_vars, unload_bc_update = \
+                run_unloading(problem, mesh, current_sol_u, current_sol_dT,
+                              current_int_vars, rot_deg=prev_rot)
+            if not ok_unl:
+                print(f"  [ERROR] Hit {step_number}: release of the previous hit failed")
+                db.fail_series(series_id, step_number)
+                return False
 
         # Reset temperature between hits (Version 8: thermal-state relaxation)
         if hit_idx > 0:
@@ -380,13 +429,13 @@ def run_forging_series(hits, mesh, problem, sol_u0, sol_dT_initial, H, R,
             # equilibrium mismatch that Newton cannot bridge in a single solve.
             # Instead ramp T_old linearly from the cooled end-state to the
             # reheated profile over several increments, doing one mechanical
-            # re-equilibration (scale = 0, platen fixed) at each increment.
+            # re-equilibration (contact-free, die released) at each increment.
             T_cold = onp.array(current_sol_dT)        # previous-hit cooled end-state
             T_hot = onp.array(sol_dT_initial)         # reheated target profile
             n_ramp = 10
             relax_dt = 1e-4
             print(f"  Running thermal-state relaxation: {n_ramp}-step temperature "
-                  f"ramp (cold -> reheated), scale=0, no contact motion...")
+                  f"ramp (cold -> reheated), contact-free...")
 
             for k in range(1, n_ramp + 1):
                 frac = k / n_ramp
@@ -405,15 +454,15 @@ def run_forging_series(hits, mesh, problem, sol_u0, sol_dT_initial, H, R,
                     decrease_factor=0.5,
                     line_search_after=0,
                     cool_factor=0.0,            # no extra cooling during ramp
-                    surface_inds=surface_inds,
+                    surface_inds=None,
                 )
                 # Seed state AND reset extrapolation history (avoids the
                 # doubled-initial-guess bug on the first sub-step).
                 relax_stepper.seed_state(current_sol_u, T_blend, current_int_vars)
 
                 ok_relax = relax_stepper.run(
-                    bc_update_fn=bc_update_fn,
-                    bc_params_fn=lambda step, scale: (step, 0.0),  # force scale=0
+                    bc_update_fn=unload_bc_update,
+                    bc_params_fn=lambda step, scale: (step, 1.0),  # die fully released
                     rho_ini=np.array([1.0, 1.0, 1.0, 1.0]),
                     vtk_dir=None,
                     save_every=1,
@@ -446,7 +495,7 @@ def run_forging_series(hits, mesh, problem, sol_u0, sol_dT_initial, H, R,
             current_sol_dT = sol_dT_initial
             print("  Relaxation complete: mechanical state re-equilibrated under reheated T_old.")
 
-            # Rebuild the contact BCs on the POST-relaxation surface so the platen
+            # Build the contact BCs on the POST-relaxation surface so the platen
             # reference planes align with the actual (thermally expanded) starting
             # geometry, avoiding a dt-independent contact jump on the first step.
             try:
@@ -530,6 +579,7 @@ def run_forging_series(hits, mesh, problem, sol_u0, sol_dT_initial, H, R,
         # Carry forward for next hit
         current_sol_u = result_u
         current_sol_dT = result_T
+        prev_rot = float(hit.rotation_euler_x)
 
         print(f"  Hit {step_number} OK — {stepper.step_count} steps, {hit_wall:.1f}s")
 

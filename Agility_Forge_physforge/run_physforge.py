@@ -200,8 +200,11 @@ def load_hits(npz_path, H, band_width_mm, v_platen=2.04, n_hits=None,
         c = float(axial[i])
         # Initial band on the reference bar.  In "deformed" mode this is only a
         # seed: run_forging_series recomputes it per hit from the deformed length.
-        xmin = max(0.0, min(1.0, (c - band_width_mm / 2.0) / H))
-        xmax = max(0.0, min(1.0, (c + band_width_mm / 2.0) / H))
+        # The band is selected in the deformed configuration and the bar may be
+        # longer than H, so the upper end is not clamped to the reference
+        # length; the BC builder warns if the band finds no material.
+        xmin = max(0.0, (c - band_width_mm / 2.0) / H)
+        xmax = max(0.0, (c + band_width_mm / 2.0) / H)
         if scan_depths is not None:
             per_side_disp = float(scan_depths[i])      # measured per-side travel
         else:
@@ -274,13 +277,13 @@ def main():
                     help="write (u, T, plasticity history) to this directory after every hit, so an interrupted run can be resumed")
     ap.add_argument("--resume-from", type=int, default=0, dest="resume_from",
                     help="resume from the checkpoint of hit N and continue with hit N+1 (requires --checkpoint-dir)")
-    ap.add_argument("--axial-constraint", choices=["face", "face_rx", "minimal3"],
-                    default="face", dest="axial_constraint",
-                    help="[v5] 'face' = pin the whole x=0 face axially (v1..v4; "
-                         "291 constraints, blocks axial flow, and leaves the "
-                         "rotation about x unconstrained); 'minimal3' = exactly 6 "
-                         "constraints on 3 corner nodes, freeing axial flow")
+    from applications.Agility_Forge_physforge.main import add_model_options
+    add_model_options(ap)
     args = ap.parse_args()
+    if args.axial_mode == "deformed":
+        raise SystemExit("the contact band is already selected on the deformed bar "
+                         "(build_cylinder_press_bcs); --axial-mode deformed would "
+                         "correct it a second time. Use --axial-mode reference.")
 
     here = os.path.dirname(__file__)
     data_dir = os.path.join(here, "data")
@@ -360,6 +363,8 @@ def main():
         surface_test = make_topological_surface_test(mesh, ele_type)
     bc_builder = partial(build_cylinder_press_bcs, surface_mask_fn=surface_test,
                          axial_constraint=args.axial_constraint)
+    print(f"Options: unload={args.unload} ({args.unload_steps} steps, "
+          f"{args.unload_time} s), axial_constraint={args.axial_constraint}")
     if args.axial_constraint != "face":
         print(f"[v5] axial rigid-body constraint mode: {args.axial_constraint}")
 
@@ -379,6 +384,9 @@ def main():
         T_linear_fn=T_uniform, db=db, series_id=series_id,
         save_vtk=args.save_vtk, vtk_dir=vtk_dir, bc_builder=bc_builder,
         checkpoint_dir=args.checkpoint_dir, resume_from=args.resume_from,
+        unload=args.unload, unload_steps=args.unload_steps,
+        unload_time=args.unload_time, axial_constraint=args.axial_constraint,
+        unload_balance=args.unload_balance, unload_vtk=args.unload_vtk,
     )
     print(f"\n{'='*72}")
     print(f"physforge result: {'ALL HITS OK' if ok else 'FAILED (see [FAIL]/[ERROR] above)'}")

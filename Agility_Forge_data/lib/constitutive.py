@@ -4,6 +4,22 @@ Contains:
   - Constitutive model (temperature-dependent J2 with F-bar)
   - Coupled weak form (universal_kernel + surface Neumann)
   - Post-processing helpers (stress, von Mises, internal-variable update)
+
+Thermal discretisation (corrected November 2026; the README, Model
+corrections, has the measurements):
+
+* The heat-capacity term and the die-contact heat transfer are row-sum lumped
+  onto the nodes: node i stores heat as C/dt (T_i - T_old_i) int N_i and loses
+  it to the die as h (T0 - T_i) int m N_i, with its own temperature only.  The
+  consistent terms of the original weak form couple neighbouring nodes with
+  positive weights, so the implicit update was not monotone and the billet
+  left the range between the die temperature and its hottest state.
+* The thermal rate terms divide by the step's own dt (the per-quadrature
+  ``dt`` argument that ``set_timestep`` / ``set_params`` update).  The
+  original kernel divided by ``self.dt``, a Python float that JIT compiled in
+  as a constant, so every hit kept the dt of its first solve (1e-3 s).
+* The die-contact surface integral uses reference-normal area weights
+  (``reference_nanson_scale`` in lib/boundary_conditions.py).
 """
 
 import numpy as onp
@@ -13,6 +29,12 @@ import jax.numpy as np
 from jax_fem_checkpoint.problem import Problem
 
 from applications.Agility_Forge_data.material_data import Q_temps, Q_reducs, b_temps, b_reducs
+
+
+# Die interface conductance (mW/mm^2-K == 1e4 W/m^2-K) and platen temperature (C),
+# used by both forms of the die-contact kernel.
+DIE_H = 10.0
+DIE_T = 25.0
 
 
 # =============================================================================
@@ -105,6 +127,9 @@ class ThermalMechanical(Problem):
         ]
 
         self.nodes_to_compare = None
+        # External nodal force on the displacement field (N, 3) or None.  Set
+        # by the unloading phase between hits; see compute_residual below.
+        self.f_ext_nodes = None
         self.target_displacement = None
 
     # -----------------------------------------------------------------
@@ -154,6 +179,33 @@ class ThermalMechanical(Problem):
     def set_timestep(self, dt):
         self.dt = dt
         self.internal_vars[-1] = self.dt * np.ones((self.fe_T.num_cells, self.fe_T.num_quads))
+
+    # -----------------------------------------------------------------
+    # External nodal force (force-controlled unloading between hits)
+    # -----------------------------------------------------------------
+    # The residual is r(u) = f_int(u) - f_ext.  ``f_ext_nodes`` is a plain
+    # nodal array, independent of u, so the tangent is unchanged and the row
+    # elimination for Dirichlet dofs applies after the subtraction exactly as
+    # before.  With ``f_ext_nodes = None`` nothing changes.
+    def _subtract_f_ext(self, res_list):
+        f_ext = getattr(self, "f_ext_nodes", None)
+        if f_ext is None:
+            return res_list
+        return [res_list[0] - f_ext] + list(res_list[1:])
+
+    def compute_residual(self, sol_list):
+        return self._subtract_f_ext(super().compute_residual(sol_list))
+
+    def newton_update(self, sol_list):
+        return self._subtract_f_ext(super().newton_update(sol_list))
+
+    def internal_force(self, sol_list):
+        """Unconstrained internal force f_int(u), no external nodal force.
+
+        At a Dirichlet dof this is the force the constraint exerts on the
+        body, i.e. the die reaction at a contact node.
+        """
+        return super().compute_residual(sol_list)
 
     # =================================================================
     # Constitutive model & maps
@@ -334,6 +386,20 @@ class ThermalMechanical(Problem):
         int_vars_map = self.get_update_int_vars_map()
         detla_gamma_map = self.get_detla_gamma_map()
 
+        # The lumped capacity term needs the NODAL T_old of the cell; T_old
+        # arrives at the quadrature points as the interpolant of the nodal
+        # sol_dT_old (set_params), so the nodal values are recovered exactly
+        # with the left inverse of the shape-value matrix (4 x 4 and well
+        # conditioned for TET4 with the 4-point rule).
+        S = onp.asarray(self.fes[1].shape_vals, dtype=onp.float64)   # (nq, nn)
+        P = onp.linalg.pinv(S)
+        if not onp.allclose(P @ S, onp.eye(S.shape[1]), atol=1e-10):
+            raise ValueError(
+                f"the lumped heat capacity needs the nodal T_old to be "
+                f"recoverable from its {S.shape[0]} quadrature values on a "
+                f"{S.shape[1]}-node element; use a higher gauss_order")
+        P_T = np.asarray(P)
+
         def hard_satu_temp(T):
             T = np.asarray(T).reshape(())
             return np.interp(T, Q_temps, Q_reducs) * self.Q
@@ -387,9 +453,13 @@ class ThermalMechanical(Problem):
             # ---- Thermal part ----
             T = np.sum(cell_sol_T[None, :, :] * self.fe_T.shape_vals[:, :, None], axis=1)
 
-            val1 = (self.C / self.dt * np.sum(
-                (T - T_old)[:, None, :] * self.fe_T.shape_vals[:, :, None]
-                * cell_JxW_T[:, None, None], axis=0))
+            # row-sum lumped heat capacity, divided by the step's own dt
+            T_nodes = cell_sol_T[:, 0]
+            T_old_nodes = P_T @ T_old.reshape(-1)
+            val1 = self.C * np.sum(
+                ((T_nodes - T_old_nodes)[None, :] / dt[:, None])
+                * self.fe_T.shape_vals
+                * cell_JxW_T[:, None], axis=0)[:, None]
 
             detla_gammas = jax.vmap(detla_gamma_map)(u_grads_reshape, *cell_internal_vars_updated)
 
@@ -402,7 +472,8 @@ class ThermalMechanical(Problem):
                 u_grads_reshape, *cell_internal_vars_updated)
             # (flow_stresses_new computed but not used — semi-implicit for convergence)
 
-            tmp2 = -detla_gammas * np.sqrt(2. / 3.) * flow_stresses_old / self.dt
+            tmp2 = (-detla_gammas * np.sqrt(2. / 3.) * flow_stresses_old
+                    / dt)
             val2 = self.Chi * np.sum(
                 tmp2[:, None, None] * self.fe_T.shape_vals[:, :, None]
                 * cell_JxW_T[:, None, None], axis=0)
@@ -417,18 +488,14 @@ class ThermalMechanical(Problem):
         return universal_kernel
 
     # =================================================================
-    # Surface Neumann kernels (thermal convection)
+    # Surface kernels: die-contact heat transfer
     # =================================================================
     def get_universal_kernels_surface(self):
-        def thermal_neumann(T, old_T_face, contact_mask):
-            # Die-contact heat extraction.  h is the interface conductance and
-            # T0 the platen temperature; the mask (in [0, 1]) restricts the
-            # flux to the part of the candidate band that is actually pressed
-            # against a platen at this step.
-            h = 10.0   # mW/mm^2-K  == 1e4 W/m^2-K, typical die interface
-            T0 = 25.   # platen temperature (deg C)
-            q_contact = contact_mask[0] * h * (T0 - T[0])
-            return -np.array([q_contact])
+        # Die-contact heat extraction q = h (T0 - T): h = DIE_H is the interface
+        # conductance, T0 = DIE_T the platen temperature; the mask (in [0, 1])
+        # restricts the flux to the part of the candidate band that is actually
+        # pressed against a platen at this step.  (The two kernels are the two
+        # platens; the old name "convection" is kept for the kernel functions.)
 
         def _surface_kernel(cell_sol_flat, x, face_shape_vals, face_shape_grads,
                             face_nanson_scale, old_T_face, contact_mask):
@@ -437,10 +504,13 @@ class ThermalMechanical(Problem):
             face_shape_vals = face_shape_vals[:, -self.fes[1].num_nodes:]
             face_nanson_scale = face_nanson_scale[0]
 
-            T = np.sum(cell_sol_T[None, :, :] * face_shape_vals[:, :, None], axis=1)
-            u_physics = jax.vmap(thermal_neumann)(T, old_T_face, contact_mask)
-            val_T = np.sum(u_physics[:, None, :] * face_shape_vals[:, :, None]
-                           * face_nanson_scale[:, None, None], axis=0)
+            # row-sum lumped: each node is pulled toward the die temperature by
+            # its own temperature only; the contact mask stays at the
+            # quadrature points (how much of the face is pressed).
+            T_nodes = cell_sol_T[:, 0]
+            q = contact_mask[:, 0][:, None] * DIE_H * (DIE_T - T_nodes[None, :])
+            val_T = -np.sum(q * face_shape_vals
+                            * face_nanson_scale[:, None], axis=0)[:, None]
             val_u = np.zeros((self.fes[0].num_nodes, self.fes[0].vec))
             val = [val_u, val_T]
             return jax.flatten_util.ravel_pytree(val)[0]

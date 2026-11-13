@@ -59,7 +59,9 @@ from applications.Agility_Forge_physforge.mesh_container import MeshContainer
 from applications.Agility_Forge_physforge.hit_config import Hit
 from applications.Agility_Forge_physforge.lib.constitutive import ThermalMechanical
 from applications.Agility_Forge_physforge.lib.time_stepper import AutomaticTimeStepperTM
-from applications.Agility_Forge_physforge.lib.boundary_conditions import build_cylinder_press_bcs, refresh_problem_surface_integrals
+from functools import partial
+from applications.Agility_Forge_physforge.lib.boundary_conditions import (
+    build_cylinder_press_bcs, build_unload_bcs, refresh_problem_surface_integrals)
 from applications.Agility_Forge_physforge.data_storage import ForgingDBMS
 
 
@@ -241,9 +243,86 @@ def _remap_band_deformed(hit, mesh, current_sol_u, H):
 # =============================================================================
 # Run one series (multi-hit forging on a single workpiece)
 # =============================================================================
+# =============================================================================
+# Force-controlled unloading between hits
+# =============================================================================
+def run_unloading(problem, mesh, sol_u, sol_dT, int_vars, reaction_u,
+                  axial_constraint="face", n_steps=10, total_time=1e-3,
+                  rho_ini=None, T_old_last=None, dt_last=None, balance="self", mode="peel",
+                  rot_deg=0.0, vtk_dir=None):
+    """Release the previous hit's die reaction gradually.
+
+    The contact rows are replaced by the external force ``lambda * R`` on the
+    former contact nodes (``build_unload_bcs``) and ``lambda`` is ramped from
+    1 to 0 by the stepper's load schedule, with retries on failure.  Before
+    stepping, the residual at ``lambda = 1`` is evaluated as a consistency
+    check: the released state must still be in equilibrium, so the residual
+    at the released nodes should be at round-off.
+
+    Returns ``(ok, sol_u, sol_dT, int_vars, bc_update_fn)``; the last item
+    installs the contact-free configuration (use it with ``scale = 1`` for a
+    subsequent contact-free phase such as the reheat ramp).
+    """
+    if rho_ini is None:
+        rho_ini = np.array([1.0, 1.0, 1.0, 1.0])
+    left = getattr(problem, "contact_left_inds", onp.zeros((0,), dtype=int))
+    right = getattr(problem, "contact_right_inds", onp.zeros((0,), dtype=int))
+    contact = onp.concatenate([onp.asarray(left, dtype=int), onp.asarray(right, dtype=int)])
+    dbc_u, bc_update = build_unload_bcs(mesh, reaction_u, contact, axial_constraint,
+                                        sol_u=sol_u, balance=balance, mode=mode,
+                                        left_inds=left, right_inds=right, rot_deg=rot_deg)
+    problem.dirichlet_bc_info = [dbc_u, None]
+
+    # ---- lambda = 1 consistency check ----
+    # Evaluated twice: with the T_old and dt of the last converged step (must
+    # reproduce the captured reaction, so the residual at the released nodes
+    # is round-off), and with the end-of-hit temperature the release will
+    # actually use (the difference is the thermal-stress change over one
+    # step, which the first release increment has to absorb).
+    dt0 = float(total_time) / int(n_steps)
+    pts = onp.asarray(mesh.points)
+    end_face = onp.abs(pts[:, 0] - pts[:, 0].min()) <= 1e-5
+    R_rel = float(onp.linalg.norm(onp.asarray(reaction_u)[contact])) if len(contact) else 0.0
+    bc_update(problem, sol_u, 0, 0.0)
+    checks = [("end-of-hit T_old", sol_dT, dt0)] if mode == "force" else []
+    if T_old_last is not None and mode == "force":
+        checks.insert(0, ("last step's T_old/dt", T_old_last, float(dt_last or dt0)))
+    for label, T_chk, dt_chk in checks:
+        problem.set_timestep(dt_chk)
+        problem.set_params([int_vars, 0.0, sol_u, rho_ini, T_chk])
+        res_u = onp.asarray(problem.compute_residual([sol_u, sol_dT])[0])
+        r_contact = float(onp.linalg.norm(res_u[contact])) if len(contact) else 0.0
+        r_free = float(onp.linalg.norm(res_u[~end_face]))
+        print(f"  [unload] lambda=1 check ({label}): |r| at the {len(contact)} released "
+              f"nodes = {r_contact:.3e} N, over all non-end-face nodes = {r_free:.3e} N, "
+              f"released |R| = {R_rel:.3e} N")
+
+    stepper = AutomaticTimeStepperTM(
+        problem, total_time=float(total_time), initial_dt=dt0,
+        min_dt=dt0 / 2 ** 8, max_dt=dt0, max_retries=10,
+        increase_factor=1.0, decrease_factor=0.5, line_search_after=0,
+        cool_factor=0.0, surface_inds=None)
+    stepper.seed_state(np.array(sol_u), np.array(sol_dT), int_vars)
+    ok = stepper.run(bc_update_fn=bc_update,
+                     bc_params_fn=lambda step, scale: (step, scale),
+                     rho_ini=rho_ini, vtk_dir=vtk_dir, save_every=1)
+    if ok:
+        du = onp.asarray(stepper.sol_u) - onp.asarray(sol_u)
+        print(f"  [unload] released in {stepper.step_count} steps; Newton iterations "
+              f"per step {stepper.iters_hist}; springback |du|_inf = "
+              f"{float(onp.abs(du).max()):.4f} mm")
+    else:
+        print("  [unload] FAILED")
+    problem.f_ext_nodes = None
+    return ok, stepper.sol_u, stepper.sol_dT, stepper.int_vars, bc_update
+
+
 def run_forging_series(hits, mesh, problem, sol_u0, sol_dT_initial, H, R,
                        T_linear_fn, db, series_id, save_vtk=False, vtk_dir=None,
-                       bc_builder=None, checkpoint_dir=None, resume_from=0):
+                       bc_builder=None, checkpoint_dir=None, resume_from=0,
+                       unload="peel", unload_steps=10, unload_time=1e-3,
+                       axial_constraint="face", unload_balance="self",
+                       unload_vtk=False):
     """Execute a single series of hits on the same workpiece.
 
     State carried across hits: F, alpha (plasticity history) and displacement.
@@ -279,6 +358,9 @@ def run_forging_series(hits, mesh, problem, sol_u0, sol_dT_initial, H, R,
     current_sol_u = sol_u0
     current_sol_dT = np.array(sol_dT_initial)
     current_int_vars = problem.internal_vars
+    last_res_u = None            # die reaction at the end of the previous hit
+    last_T_old, last_dt = None, None
+    prev_rot = 0.0               # rotation of the previous hit, for the peel order
 
     # [v6a] Checkpointing.  The plasticity history (F, be, alpha, ...) lives
     # only in memory -- neither the DB nor the VTK stores it -- so without a
@@ -295,6 +377,17 @@ def run_forging_series(hits, mesh, problem, sol_u0, sol_dT_initial, H, R,
         current_sol_u = np.array(z["sol_u"])
         current_sol_dT = np.array(z["sol_dT"])
         current_int_vars = [np.array(z[f"iv_{i}"]) for i in range(int(z["n_iv"]))]
+        # what the release of the checkpointed hit needs (see the save below)
+        if "res_u" not in z.files:
+            raise ValueError(f"{ck} has no die reaction / contact set of its last hit "
+                             f"(written before the release state was checkpointed), so "
+                             f"the release between hits cannot be continued from it")
+        last_res_u = np.array(z["res_u"])
+        last_T_old = np.array(z["T_old_last"]) if "T_old_last" in z.files else None
+        last_dt = float(z["dt_last"]) if "dt_last" in z.files else None
+        prev_rot = float(z["rot_last"])
+        problem.contact_left_inds = onp.asarray(z["contact_left_inds"])
+        problem.contact_right_inds = onp.asarray(z["contact_right_inds"])
         print(f"[CKPT] resumed from {ck}: {resume_from} hits done, "
               f"{len(current_int_vars)} int_vars components, "
               f"|u|_inf={float(onp.abs(z['sol_u']).max()):.3f}mm "
@@ -327,22 +420,47 @@ def run_forging_series(hits, mesh, problem, sol_u0, sol_dT_initial, H, R,
         input_u = current_sol_u
         input_T = current_sol_dT
 
-        # Build BCs for this hit
-        current_sol_u_for_bc = current_sol_u if hit_idx > 0 else None
-        try:
-            dirichlet_bc_info_u, dirichlet_bc_info_T, location_fns_convect, \
-                bc_update_fn, surface_inds = \
-                bc_builder(mesh, R=R, H=H, hit=hit,
-                           current_sol_u=current_sol_u_for_bc,
-                           T_linear_fn=T_linear_fn)
-        except Exception as e:
-            print(f"  [ERROR] BC construction failed: {e}")
-            db.fail_series(series_id, step_number)
-            return False
+        # ------------------------------------------------------------------
+        # Between-hit transition
+        # ------------------------------------------------------------------
+        # The previous hit's contact is released gradually (run_unloading,
+        # unload="peel" or "force") with only rigid-body rows installed, the
+        # reheat ramp runs contact-free, and the new hit's rows are built
+        # once, on the unloaded and reheated surface.  The first hit has no
+        # previous contact: its rows are built directly.
 
-        problem.dirichlet_bc_info = [dirichlet_bc_info_u, dirichlet_bc_info_T]
-        problem.location_fns = location_fns_convect
-        refresh_problem_surface_integrals(problem)
+        def _build_hit_bcs(u_for_bc):
+            out = bc_builder(mesh, R=R, H=H, hit=hit, current_sol_u=u_for_bc,
+                             T_linear_fn=T_linear_fn)
+            problem.dirichlet_bc_info = [out[0], out[1]]
+            problem.location_fns = out[2]
+            refresh_problem_surface_integrals(problem)
+            return out
+
+        if hit_idx == 0:
+            try:
+                (dirichlet_bc_info_u, dirichlet_bc_info_T, location_fns_convect,
+                 bc_update_fn, surface_inds) = _build_hit_bcs(None)
+            except Exception as e:
+                print(f"  [ERROR] BC construction failed: {e}")
+                db.fail_series(series_id, step_number)
+                return False
+        else:
+            ok_unl, current_sol_u, current_sol_dT, current_int_vars, unload_bc_update = \
+                run_unloading(problem, mesh, current_sol_u, current_sol_dT,
+                              current_int_vars, last_res_u,
+                              axial_constraint=axial_constraint,
+                              n_steps=unload_steps, total_time=unload_time,
+                              T_old_last=last_T_old, dt_last=last_dt,
+                              balance=unload_balance, mode=unload, rot_deg=prev_rot,
+                              vtk_dir=(os.path.join(vtk_dir, f"unload_{hit_idx}")
+                                       if (unload_vtk and vtk_dir) else None))
+            if not ok_unl:
+                print(f"  [ERROR] Hit {step_number}: unloading of the previous hit failed")
+                db.fail_series(series_id, step_number)
+                return False
+            ramp_bc_update = unload_bc_update
+            ramp_params = (lambda step, scale: (step, 1.0))      # lambda = 0: fully released
 
         # Reset temperature between hits (Version 8: thermal-state relaxation)
         if hit_idx > 0:
@@ -357,13 +475,13 @@ def run_forging_series(hits, mesh, problem, sol_u0, sol_dT_initial, H, R,
             # equilibrium mismatch that Newton cannot bridge in a single solve.
             # Instead ramp T_old linearly from the cooled end-state to the
             # reheated profile over several increments, doing one mechanical
-            # re-equilibration (scale = 0, platen fixed) at each increment.
+            # re-equilibration at each increment.
             T_cold = onp.array(current_sol_dT)        # previous-hit cooled end-state
             T_hot = onp.array(sol_dT_initial)         # reheated target profile
             n_ramp = 10
             relax_dt = 1e-4
             print(f"  Running thermal-state relaxation: {n_ramp}-step temperature "
-                  f"ramp (cold -> reheated), scale=0, no contact motion...")
+                  f"ramp (cold -> reheated), contact-free...")
 
             for k in range(1, n_ramp + 1):
                 frac = k / n_ramp
@@ -382,15 +500,15 @@ def run_forging_series(hits, mesh, problem, sol_u0, sol_dT_initial, H, R,
                     decrease_factor=0.5,
                     line_search_after=0,
                     cool_factor=0.0,            # no extra cooling during ramp
-                    surface_inds=surface_inds,
+                    surface_inds=None,
                 )
                 # Seed state AND reset extrapolation history (avoids the
                 # doubled-initial-guess bug on the first sub-step).
                 relax_stepper.seed_state(current_sol_u, T_blend, current_int_vars)
 
                 ok_relax = relax_stepper.run(
-                    bc_update_fn=bc_update_fn,
-                    bc_params_fn=lambda step, scale: (step, 0.0),  # force scale=0
+                    bc_update_fn=ramp_bc_update,
+                    bc_params_fn=ramp_params,
                     rho_ini=np.array([1.0, 1.0, 1.0, 1.0]),
                     vtk_dir=None,
                     save_every=1,
@@ -423,22 +541,19 @@ def run_forging_series(hits, mesh, problem, sol_u0, sol_dT_initial, H, R,
             current_sol_dT = sol_dT_initial
             print("  Relaxation complete: mechanical state re-equilibrated under reheated T_old.")
 
-            # Rebuild the contact BCs on the POST-relaxation surface so the platen
-            # reference planes align with the actual (thermally expanded) starting
-            # geometry, avoiding a dt-independent contact jump on the first step.
+            # Build the contact BCs on the POST-relaxation surface so the platen reference planes align with the actual
+            # starting geometry, avoiding a dt-independent contact jump on the
+            # first step.
             try:
-                dirichlet_bc_info_u, dirichlet_bc_info_T, location_fns_convect, \
-                    bc_update_fn, surface_inds = \
-                    bc_builder(mesh, R=R, H=H, hit=hit,
-                               current_sol_u=current_sol_u,
-                               T_linear_fn=T_linear_fn)
+                (dirichlet_bc_info_u, dirichlet_bc_info_T, location_fns_convect,
+                 bc_update_fn, surface_inds) = _build_hit_bcs(current_sol_u)
             except Exception as e:
-                print(f"  [ERROR] BC rebuild after relaxation failed: {e}")
+                print(f"  [ERROR] BC (re)build after relaxation failed: {e}")
                 db.fail_series(series_id, step_number)
                 return False
-            problem.dirichlet_bc_info = [dirichlet_bc_info_u, dirichlet_bc_info_T]
-            problem.location_fns = location_fns_convect
-            refresh_problem_surface_integrals(problem)
+
+        problem.f_ext_nodes = None          # no external force during a hit
+
 
         # Create stepper
         stepper = AutomaticTimeStepperTM(
@@ -508,6 +623,9 @@ def run_forging_series(hits, mesh, problem, sol_u0, sol_dT_initial, H, R,
         current_sol_u = result_u
         current_sol_dT = result_T
         current_int_vars = stepper.int_vars
+        last_res_u = stepper.last_res_u      # die reaction, for the unloading
+        last_T_old, last_dt = stepper.last_T_old, stepper.last_dt
+        prev_rot = float(hit.rotation_euler_x)
 
         # [v6a] Persist the full state (including plasticity history) so an
         # interrupted run can be resumed.
@@ -517,7 +635,14 @@ def run_forging_series(hits, mesh, problem, sol_u0, sol_dT_initial, H, R,
             onp.savez_compressed(
                 os.path.join(checkpoint_dir, f"ck_hit_{step_number}.npz"),
                 sol_u=onp.asarray(current_sol_u), sol_dT=onp.asarray(current_sol_dT),
-                n_iv=onp.array(len(iv)), **{f"iv_{i}": a for i, a in enumerate(iv)})
+                n_iv=onp.array(len(iv)), **{f"iv_{i}": a for i, a in enumerate(iv)},
+                # the release before the next hit needs these (resume)
+                **({"res_u": onp.asarray(last_res_u)} if last_res_u is not None else {}),
+                rot_last=onp.array(prev_rot),
+                contact_left_inds=onp.asarray(getattr(problem, "contact_left_inds", [])),
+                contact_right_inds=onp.asarray(getattr(problem, "contact_right_inds", [])),
+                **({"T_old_last": onp.asarray(last_T_old)} if last_T_old is not None else {}),
+                **({"dt_last": onp.array(float(last_dt))} if last_dt is not None else {}))
             prev = os.path.join(checkpoint_dir, f"ck_hit_{step_number-1}.npz")
             if step_number > 1 and os.path.exists(prev):
                 os.remove(prev)          # keep only the latest, to save disk
@@ -597,8 +722,13 @@ def main(args=None):
 
     # --- Load mesh ---
     print("\nLoading mesh...")
-    mesh_0 = o3d.io.read_triangle_mesh(str(stock_mesh_path))
-    open3d_to_json(mesh_0, json_mesh_path)
+    if o3d is not None:
+        mesh_0 = o3d.io.read_triangle_mesh(str(stock_mesh_path))
+        open3d_to_json(mesh_0, json_mesh_path)
+    elif not os.path.exists(json_mesh_path):
+        raise SystemExit(f"open3d is not installed and {json_mesh_path} does not exist")
+    else:
+        print(f"[mesh] open3d not available; using the existing {json_mesh_path}")
     stock_mesh = MeshContainer.from_json(json_mesh_path)
     ele_type = "TET4"
     mesh = convert_meshio_to_jaxfem(stock_mesh.vtk, ele_type=ele_type)
@@ -643,6 +773,21 @@ def main(args=None):
         dirichlet_bc_info=[None, None],
         location_fns=[_no_location, _no_location],
     )
+
+    # --- Between-hit release and rigid-body options (CLI; defaults when args is None) ---
+    if args is not None:
+        bc_builder = partial(build_cylinder_press_bcs,
+                             axial_constraint=args.axial_constraint)
+        series_kwargs = dict(bc_builder=bc_builder,
+                             unload=args.unload, unload_steps=args.unload_steps,
+                             unload_time=args.unload_time,
+                             axial_constraint=args.axial_constraint,
+                             unload_balance=args.unload_balance,
+                             unload_vtk=args.unload_vtk)
+        print(f"Options: unload={args.unload} ({args.unload_steps} steps, "
+              f"{args.unload_time} s), axial_constraint={args.axial_constraint}")
+    else:
+        series_kwargs = {}
 
     # --- Open DB ---
     db = ForgingDBMS(db_path, new=True)
@@ -702,6 +847,7 @@ def main(args=None):
                 series_id=series_id,
                 save_vtk=save_vtk,
                 vtk_dir=vtk_dir,
+                **series_kwargs,
             )
 
             total_series += 1
@@ -726,6 +872,9 @@ def main(args=None):
     print(f"  Database: {db_path}")
     db.summary()
     db.close()
+
+
+import argparse
 
 
 def parse_args():
@@ -756,7 +905,38 @@ def parse_args():
                    help="path to forging.yml (default: configs/forging.yml)")
     p.add_argument("--db", default=None,
                    help="output SQLite path (default: data/forge_database.db)")
+    add_model_options(p)
     return p.parse_args()
+
+
+def add_model_options(p):
+    """Between-hit release and rigid-body options shared by the drivers.
+
+    The model corrections of November 2026 (README, Model corrections) are
+    built in; their previous behaviour is no longer selectable.
+    """
+    p.add_argument("--unload", choices=["peel", "force"], default="peel",
+                   help="between hits: 'peel' frees the previous hit's contact "
+                        "nodes progressively, outermost first, pinning the rest "
+                        "where the hit left them (displacement control); 'force' "
+                        "ramps the die reaction to zero as an external force "
+                        "(load control: unstable on slender hot bars, see "
+                        "build_unload_bcs)")
+    p.add_argument("--unload-vtk", action="store_true", dest="unload_vtk",
+                   help="write a VTK frame per release increment (diagnostics)")
+    p.add_argument("--unload-steps", type=int, default=10, dest="unload_steps",
+                   help="number of release increments (lambda 1 -> 0)")
+    p.add_argument("--unload-time", type=float, default=1e-3, dest="unload_time",
+                   help="pseudo-time spanned by the release, s (thermal step)")
+    p.add_argument("--unload-balance", choices=["self", "raw"], default="self",
+                   dest="unload_balance",
+                   help="'force' release only: release only the self-equilibrated "
+                        "part of the die reaction ('self'), or the reaction as "
+                        "captured ('raw', which loads the free bar with the platen "
+                        "imbalance)")
+    p.add_argument("--axial-constraint", choices=["face", "face_rx", "minimal3"],
+                   default="face", dest="axial_constraint",
+                   help="rigid-body suppression (see build_cylinder_press_bcs)")
 
 
 if __name__ == "__main__":

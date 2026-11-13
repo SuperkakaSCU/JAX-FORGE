@@ -24,10 +24,10 @@ class MeshContainer:
     If you supply a meshio representation, make sure to get "is_json" to False.
     If you supply a surface mesh, make sure to get "is_surface" to True.
 
-    Important: The default be
+    Important: The default behavior is to create both surface and volumetric representations.
 
     Surface mesh json format:
-    {faceface
+    {
         "Vertices": [float],
         "Triangles": [int]
     }
@@ -105,6 +105,7 @@ class MeshContainer:
         return mesh
 
     def __deserialize_obj(self, json_data):
+        os.makedirs(self.tmp_filepath, exist_ok=True)
         with open(self.tmp_obj, "w") as file:
 
             file.write(
