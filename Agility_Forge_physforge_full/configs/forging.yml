@@ -1,0 +1,53 @@
+# ============================================================
+# Forging V8 — Sequence definitions for VAE training data
+#
+# Structure mirrors cogging.yml:
+#   band_positions × depths × rotations → auto-expanded hits
+# ============================================================
+
+# --- Scan parameters (shared by all sequences) ---
+scan:
+  band_width: 0.2          # contact band width (fraction of H)
+  hot_zone: [0.3, 0.9]     # forgeable hot zone range (fraction of H)
+  overlap: 0.30             # overlap between adjacent band positions
+  v_platen: 2.04            # platen velocity mm/s  (total_time = disp / v_platen)
+
+# --- Noise parameters (applied when add_noise=true) ---
+noise:
+  band_center_scale: 0.05   # ±5% of H added to band center
+  depth_scale: 0.05          # ±5% of nominal depth (reduce extreme deep-hit outliers)
+  rotation_width: 5.0        # ±5° on rotation angle
+
+# --- Run control ---
+run:
+  n_series: 100              # number of series per sequence type
+  add_noise: true            # enable noise for training diversity
+  save_vtk: false            # VTK output (disable for batch data generation)
+  random_seed: 42            # for reproducibility
+
+# ============================================================
+# Sequence types
+# ============================================================
+one_press:
+  description: 'single depth, no rotation'
+  position_configs:
+    - depths: [0.40]
+      rotations: [0.0]
+
+press_rotate:
+  description: 'single depth, two rotations (0° and 90°)'
+  position_configs:
+    - depths: [0.40]
+      rotations: [0.0, 90.0]
+
+progressive:
+  description: 'two depths, two rotations'
+  position_configs:
+    - depths: [0.40, 0.70]
+      rotations: [0.0, 90.0]
+
+heavy_forge:
+  description: 'two depths, four rotations'
+  position_configs:
+    - depths: [0.35, 0.60]
+      rotations: [0.0, 45.0, 90.0, 135.0]
