@@ -1,0 +1,254 @@
+[
+  {
+    "hit": 1,
+    "seq": 1,
+    "phi": 172.0,
+    "z": 77.05999755859375,
+    "rho": 16.43000030517578,
+    "n_samples": 2060,
+    "n_strokes": 2,
+    "stroke_peaks_kn": [
+      50.982044,
+      53.73318
+    ],
+    "stroke_durations_s": [
+      0.903359685,
+      0.22310532
+    ],
+    "peak_force_kn": 53.73318,
+    "stroke_at_peak_mm": 195.34949,
+    "position_at_peak_mm": 32.400513,
+    "work_kJ": 0.19701862963609398
+  },
+  {
+    "hit": 2,
+    "seq": 2,
+    "phi": 113.80000305175781,
+    "z": 38.88999938964844,
+    "rho": 16.309999465942383,
+    "n_samples": 2172,
+    "n_strokes": 2,
+    "stroke_peaks_kn": [
+      59.81055,
+      62.097996
+    ],
+    "stroke_durations_s": [
+      1.013318261,
+      0.28023949
+    ],
+    "peak_force_kn": 62.097996,
+    "stroke_at_peak_mm": 195.66766,
+    "position_at_peak_mm": 32.082336,
+    "work_kJ": 0.24032158049813832
+  },
+  {
+    "hit": 3,
+    "seq": 3,
+    "phi": 10.300000190734863,
+    "z": 17.8700008392334,
+    "rho": 15.65999984741211,
+    "n_samples": 2538,
+    "n_strokes": 2,
+    "stroke_peaks_kn": [
+      72.374275,
+      73.64479
+    ],
+    "stroke_durations_s": [
+      1.519679103,
+      0.375770438
+    ],
+    "peak_force_kn": 73.64479,
+    "stroke_at_peak_mm": 197.06534,
+    "position_at_peak_mm": 30.684662,
+    "work_kJ": 0.38359445638568757
+  },
+  {
+    "hit": 4,
+    "seq": 4,
+    "phi": 85.69999694824219,
+    "z": 46.630001068115234,
+    "rho": 15.930000305175781,
+    "n_samples": 2219,
+    "n_strokes": 2,
+    "stroke_peaks_kn": [
+      58.60195,
+      59.638565
+    ],
+    "stroke_durations_s": [
+      1.121428019,
+      0.280237021
+    ],
+    "peak_force_kn": 59.638565,
+    "stroke_at_peak_mm": 196.4128,
+    "position_at_peak_mm": 31.337204,
+    "work_kJ": 0.27024378480992894
+  },
+  {
+    "hit": 5,
+    "seq": 5,
+    "phi": 69.9000015258789,
+    "z": 54.220001220703125,
+    "rho": 16.139999389648438,
+    "n_samples": 2153,
+    "n_strokes": 2,
+    "stroke_peaks_kn": [
+      59.367355,
+      61.500095
+    ],
+    "stroke_durations_s": [
+      1.004098272,
+      0.304195812
+    ],
+    "peak_force_kn": 61.500095,
+    "stroke_at_peak_mm": 196.00336,
+    "position_at_peak_mm": 31.746643,
+    "work_kJ": 0.23294115672175952
+  },
+  {
+    "hit": 6,
+    "seq": 6,
+    "phi": 99.80000305175781,
+    "z": 21.760000228881836,
+    "rho": 15.65999984741211,
+    "n_samples": 2379,
+    "n_strokes": 2,
+    "stroke_peaks_kn": [
+      64.179184,
+      64.8683
+    ],
+    "stroke_durations_s": [
+      1.334399208,
+      0.301096487
+    ],
+    "peak_force_kn": 64.8683,
+    "stroke_at_peak_mm": 197.00197,
+    "position_at_peak_mm": 30.748032,
+    "work_kJ": 0.33850739844562366
+  },
+  {
+    "hit": 7,
+    "seq": 7,
+    "phi": 5.900000095367432,
+    "z": 27.18000030517578,
+    "rho": 16.43000030517578,
+    "n_samples": 2043,
+    "n_strokes": 2,
+    "stroke_peaks_kn": [
+      51.090942,
+      53.260086
+    ],
+    "stroke_durations_s": [
+      0.857919115,
+      0.240842797
+    ],
+    "peak_force_kn": 53.260086,
+    "stroke_at_peak_mm": 195.35312,
+    "position_at_peak_mm": 32.39688,
+    "work_kJ": 0.17394364678061727
+  },
+  {
+    "hit": 8,
+    "seq": 8,
+    "phi": 62.099998474121094,
+    "z": 69.68000030517578,
+    "rho": 15.699999809265137,
+    "n_samples": 2806,
+    "n_strokes": 2,
+    "stroke_peaks_kn": [
+      83.51927,
+      86.08041
+    ],
+    "stroke_durations_s": [
+      1.80422434,
+      0.529242891
+    ],
+    "peak_force_kn": 86.08041,
+    "stroke_at_peak_mm": 197.08344,
+    "position_at_peak_mm": 30.666565,
+    "work_kJ": 0.43434828823626825
+  },
+  {
+    "hit": 9,
+    "seq": 9,
+    "phi": 63.70000076293945,
+    "z": 17.8700008392334,
+    "rho": 16.510000228881836,
+    "n_samples": 2129,
+    "n_strokes": 2,
+    "stroke_peaks_kn": [
+      59.969357,
+      61.599323
+    ],
+    "stroke_durations_s": [
+      0.967615444,
+      0.296938547
+    ],
+    "peak_force_kn": 61.599323,
+    "stroke_at_peak_mm": 195.26921,
+    "position_at_peak_mm": 32.48079,
+    "work_kJ": 0.2251640319294
+  },
+  {
+    "hit": 10,
+    "seq": 10,
+    "phi": 108.0999984741211,
+    "z": 86.94000244140625,
+    "rho": 16.229999542236328,
+    "n_samples": 2344,
+    "n_strokes": 2,
+    "stroke_peaks_kn": [
+      67.69399,
+      68.77191
+    ],
+    "stroke_durations_s": [
+      1.261258541,
+      0.331912386
+    ],
+    "peak_force_kn": 68.77191,
+    "stroke_at_peak_mm": 195.89095,
+    "position_at_peak_mm": 31.859055,
+    "work_kJ": 0.3197924535703765
+  },
+  {
+    "hit": 11,
+    "seq": 11,
+    "phi": 17.799999237060547,
+    "z": 75.16000366210938,
+    "rho": 15.6899995803833,
+    "n_samples": 2496,
+    "n_strokes": 2,
+    "stroke_peaks_kn": [
+      71.07564,
+      72.19344
+    ],
+    "stroke_durations_s": [
+      1.47323184,
+      0.364192729
+    ],
+    "peak_force_kn": 72.19344,
+    "stroke_at_peak_mm": 197.0002,
+    "position_at_peak_mm": 30.749802,
+    "work_kJ": 0.3702058668558899
+  },
+  {
+    "hit": 12,
+    "seq": 12,
+    "phi": 115.0999984741211,
+    "z": 57.029998779296875,
+    "rho": 16.280000686645508,
+    "n_samples": 2289,
+    "n_strokes": 2,
+    "stroke_peaks_kn": [
+      70.017334,
+      72.42871
+    ],
+    "stroke_durations_s": [
+      1.13442982,
+      0.456822918
+    ],
+    "peak_force_kn": 72.42871,
+    "stroke_at_peak_mm": 195.81255,
+    "position_at_peak_mm": 31.937454,
+    "work_kJ": 0.2821463557636781
+  }
+]

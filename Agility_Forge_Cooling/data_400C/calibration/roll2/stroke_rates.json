@@ -1,0 +1,194 @@
+[
+  {
+    "hit": 1,
+    "stroke": 1,
+    "load_dur_s": 0.794232678,
+    "closure_mm": 2.520927272471763,
+    "eps_rate_nominal": 0.16661633794830039,
+    "peak_kn": 50.982044
+  },
+  {
+    "hit": 1,
+    "stroke": 2,
+    "load_dur_s": 0.12453913699999974,
+    "closure_mm": 0.3685657508967175,
+    "eps_rate_nominal": 0.15535103243600246,
+    "peak_kn": 53.73318
+  },
+  {
+    "hit": 2,
+    "stroke": 1,
+    "load_dur_s": 0.9009981579999999,
+    "closure_mm": 2.605623322773649,
+    "eps_rate_nominal": 0.15180733275119426,
+    "peak_kn": 59.81055
+  },
+  {
+    "hit": 2,
+    "stroke": 2,
+    "load_dur_s": 0.17079212199999994,
+    "closure_mm": 0.4466949539550704,
+    "eps_rate_nominal": 0.13729294852012863,
+    "peak_kn": 62.097996
+  },
+  {
+    "hit": 3,
+    "stroke": 1,
+    "load_dur_s": 1.3988672309999999,
+    "closure_mm": 3.2406925034701715,
+    "eps_rate_nominal": 0.1216091765364102,
+    "peak_kn": 72.374275
+  },
+  {
+    "hit": 3,
+    "stroke": 2,
+    "load_dur_s": 0.254524108,
+    "closure_mm": 0.5413347294424433,
+    "eps_rate_nominal": 0.11164569617340314,
+    "peak_kn": 73.64479
+  },
+  {
+    "hit": 4,
+    "stroke": 1,
+    "load_dur_s": 1.0132715829999999,
+    "closure_mm": 2.8861384074978282,
+    "eps_rate_nominal": 0.14951897499090952,
+    "peak_kn": 58.60195
+  },
+  {
+    "hit": 4,
+    "stroke": 2,
+    "load_dur_s": 0.17252195499999967,
+    "closure_mm": 0.4902460585431019,
+    "eps_rate_nominal": 0.14916768845946834,
+    "peak_kn": 59.638565
+  },
+  {
+    "hit": 5,
+    "stroke": 1,
+    "load_dur_s": 0.889737103,
+    "closure_mm": 2.617073911910982,
+    "eps_rate_nominal": 0.15440427010531196,
+    "peak_kn": 59.367355
+  },
+  {
+    "hit": 5,
+    "stroke": 2,
+    "load_dur_s": 0.1851478990000004,
+    "closure_mm": 0.5183848528867898,
+    "eps_rate_nominal": 0.14697333023014084,
+    "peak_kn": 61.500095
+  },
+  {
+    "hit": 6,
+    "stroke": 1,
+    "load_dur_s": 1.217817788,
+    "closure_mm": 3.095771520961618,
+    "eps_rate_nominal": 0.133441712701491,
+    "peak_kn": 64.179184
+  },
+  {
+    "hit": 6,
+    "stroke": 2,
+    "load_dur_s": 0.19005622399999966,
+    "closure_mm": 0.47079921166682936,
+    "eps_rate_nominal": 0.13003451746382286,
+    "peak_kn": 64.8683
+  },
+  {
+    "hit": 7,
+    "stroke": 1,
+    "load_dur_s": 0.7489562189999999,
+    "closure_mm": 2.499103021896758,
+    "eps_rate_nominal": 0.175159117459425,
+    "peak_kn": 51.090942
+  },
+  {
+    "hit": 7,
+    "stroke": 2,
+    "load_dur_s": 0.13161846099999996,
+    "closure_mm": 0.3939876449541764,
+    "eps_rate_nominal": 0.15713423468252563,
+    "peak_kn": 53.260086
+  },
+  {
+    "hit": 8,
+    "stroke": 1,
+    "load_dur_s": 1.679050502,
+    "closure_mm": 3.201075756193166,
+    "eps_rate_nominal": 0.10007767638072239,
+    "peak_kn": 83.51927
+  },
+  {
+    "hit": 8,
+    "stroke": 2,
+    "load_dur_s": 0.40710493999999997,
+    "closure_mm": 0.624226160588707,
+    "eps_rate_nominal": 0.08048975642183259,
+    "peak_kn": 86.08041
+  },
+  {
+    "hit": 9,
+    "stroke": 1,
+    "load_dur_s": 0.8318726129999999,
+    "closure_mm": 2.3861461996521314,
+    "eps_rate_nominal": 0.15057235494594,
+    "peak_kn": 59.969357
+  },
+  {
+    "hit": 9,
+    "stroke": 2,
+    "load_dur_s": 0.179372898,
+    "closure_mm": 0.4830915853755968,
+    "eps_rate_nominal": 0.14137664397843613,
+    "peak_kn": 61.599323
+  },
+  {
+    "hit": 10,
+    "stroke": 1,
+    "load_dur_s": 1.14422419,
+    "closure_mm": 2.820542750587446,
+    "eps_rate_nominal": 0.12939770737365505,
+    "peak_kn": 67.69399
+  },
+  {
+    "hit": 10,
+    "stroke": 2,
+    "load_dur_s": 0.21650727400000003,
+    "closure_mm": 0.5109465383100691,
+    "eps_rate_nominal": 0.12388193753575416,
+    "peak_kn": 68.77191
+  },
+  {
+    "hit": 11,
+    "stroke": 1,
+    "load_dur_s": 1.350158692,
+    "closure_mm": 3.1948266072589675,
+    "eps_rate_nominal": 0.12421312727579308,
+    "peak_kn": 71.07564
+  },
+  {
+    "hit": 11,
+    "stroke": 2,
+    "load_dur_s": 0.24713903800000026,
+    "closure_mm": 0.5458571764706015,
+    "eps_rate_nominal": 0.11594250854332232,
+    "peak_kn": 72.19344
+  },
+  {
+    "hit": 12,
+    "stroke": 1,
+    "load_dur_s": 0.998386216,
+    "closure_mm": 2.512356375017113,
+    "eps_rate_nominal": 0.1320953978498709,
+    "peak_kn": 70.017334
+  },
+  {
+    "hit": 12,
+    "stroke": 2,
+    "load_dur_s": 0.314109733,
+    "closure_mm": 0.8200382381137068,
+    "eps_rate_nominal": 0.13704327548689976,
+    "peak_kn": 72.42871
+  }
+]

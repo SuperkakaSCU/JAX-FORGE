@@ -1,0 +1,107 @@
+{
+  "calibration": {
+    "slope": 1.7051931072121833,
+    "intercept": 3.5687769088471533,
+    "residual_rms_mm": 0.5199833052235119,
+    "clip_kn": 110.0,
+    "n_clean": 12
+  },
+  "hits": [
+    {
+      "hit": 1,
+      "peak_kn": 97.194565,
+      "rho_command": 14.76,
+      "rho_achieved": 14.734452059936952,
+      "shortfall_mm": -0.025547940063047392,
+      "clipped": false
+    },
+    {
+      "hit": 2,
+      "peak_kn": 84.4439,
+      "rho_command": 14.13,
+      "rho_achieved": 14.046881839859756,
+      "shortfall_mm": -0.08311816014024487,
+      "clipped": false
+    },
+    {
+      "hit": 3,
+      "peak_kn": 75.17324,
+      "rho_command": 14.71,
+      "rho_achieved": 14.779498570901088,
+      "shortfall_mm": 0.06949857090108758,
+      "clipped": false
+    },
+    {
+      "hit": 4,
+      "peak_kn": 83.49655,
+      "rho_command": 13.67,
+      "rho_achieved": 13.515274600676142,
+      "shortfall_mm": -0.15472539932385843,
+      "clipped": false
+    },
+    {
+      "hit": 5,
+      "peak_kn": 76.024315,
+      "rho_command": 14.48,
+      "rho_achieved": 14.503215493044745,
+      "shortfall_mm": 0.023215493044745017,
+      "clipped": false
+    },
+    {
+      "hit": 6,
+      "peak_kn": 82.932724,
+      "rho_command": 11.88,
+      "rho_achieved": 11.423320918179742,
+      "shortfall_mm": -0.4566790818202584,
+      "clipped": false
+    },
+    {
+      "hit": 7,
+      "peak_kn": 42.91945,
+      "rho_command": 13.45,
+      "rho_achieved": 13.674958567757834,
+      "shortfall_mm": 0.22495856775783452,
+      "clipped": false
+    },
+    {
+      "hit": 8,
+      "peak_kn": 63.54047,
+      "rho_command": 9.3,
+      "rho_achieved": 10.008915130472154,
+      "shortfall_mm": 0.7089151304721533,
+      "clipped": false
+    },
+    {
+      "hit": 9,
+      "peak_kn": 26.250267,
+      "rho_command": 13.09,
+      "rho_achieved": 13.251456973160934,
+      "shortfall_mm": 0.16145697316093433,
+      "clipped": false
+    },
+    {
+      "hit": 10,
+      "peak_kn": 39.07939,
+      "rho_command": 9.45,
+      "rho_achieved": 8.984983006529584,
+      "shortfall_mm": -0.4650169934704156,
+      "clipped": false
+    },
+    {
+      "hit": 11,
+      "peak_kn": 33.187695,
+      "rho_command": 11.02,
+      "rho_achieved": 10.824921830308561,
+      "shortfall_mm": -0.19507816969143832,
+      "clipped": false
+    },
+    {
+      "hit": 12,
+      "peak_kn": 30.775759,
+      "rho_command": 13.25,
+      "rho_achieved": 13.442121009172396,
+      "shortfall_mm": 0.19212100917239638,
+      "clipped": false
+    }
+  ]
+}

@@ -1,0 +1,194 @@
+[
+  {
+    "hit": 1,
+    "stroke": 1,
+    "load_dur_s": 3.6628208840000003,
+    "closure_mm": 5.120717391519145,
+    "eps_rate_nominal": 0.07338717099739478,
+    "peak_kn": 96.41605
+  },
+  {
+    "hit": 1,
+    "stroke": 2,
+    "load_dur_s": 0.7908295039999995,
+    "closure_mm": 0.9026813405998979,
+    "eps_rate_nominal": 0.0599179052323081,
+    "peak_kn": 97.194565
+  },
+  {
+    "hit": 2,
+    "stroke": 1,
+    "load_dur_s": 2.79459606,
+    "closure_mm": 5.867552453550356,
+    "eps_rate_nominal": 0.11021557183868723,
+    "peak_kn": 83.87253
+  },
+  {
+    "hit": 2,
+    "stroke": 2,
+    "load_dur_s": 0.39590140399999996,
+    "closure_mm": 0.7919712989034267,
+    "eps_rate_nominal": 0.10500921722006222,
+    "peak_kn": 84.4439
+  },
+  {
+    "hit": 3,
+    "stroke": 1,
+    "load_dur_s": 1.7878576199999998,
+    "closure_mm": 5.146962512855092,
+    "eps_rate_nominal": 0.15112040029507032,
+    "peak_kn": 73.90748
+  },
+  {
+    "hit": 3,
+    "stroke": 2,
+    "load_dur_s": 0.27013697400000014,
+    "closure_mm": 0.6946837839009614,
+    "eps_rate_nominal": 0.13499203689997347,
+    "peak_kn": 75.17324
+  },
+  {
+    "hit": 4,
+    "stroke": 1,
+    "load_dur_s": 3.068124934,
+    "closure_mm": 6.3730664603535345,
+    "eps_rate_nominal": 0.10903864032388427,
+    "peak_kn": 82.9715
+  },
+  {
+    "hit": 4,
+    "stroke": 2,
+    "load_dur_s": 0.5408177280000004,
+    "closure_mm": 1.6262322362618704,
+    "eps_rate_nominal": 0.15784712144005303,
+    "peak_kn": 83.49655
+  },
+  {
+    "hit": 5,
+    "stroke": 1,
+    "load_dur_s": 1.8796278390000003,
+    "closure_mm": 5.373421908196729,
+    "eps_rate_nominal": 0.15006661725996595,
+    "peak_kn": 74.82299
+  },
+  {
+    "hit": 5,
+    "stroke": 2,
+    "load_dur_s": 0.28898830200000036,
+    "closure_mm": 0.7589158052108953,
+    "eps_rate_nominal": 0.13785367689751873,
+    "peak_kn": 76.024315
+  },
+  {
+    "hit": 6,
+    "stroke": 1,
+    "load_dur_s": 2.7804062810000003,
+    "closure_mm": 8.123110480223401,
+    "eps_rate_nominal": 0.1533624786693029,
+    "peak_kn": 81.43894
+  },
+  {
+    "hit": 6,
+    "stroke": 2,
+    "load_dur_s": 0.37601779299999993,
+    "closure_mm": 0.8351652337653945,
+    "eps_rate_nominal": 0.11659207490175202,
+    "peak_kn": 82.932724
+  },
+  {
+    "hit": 7,
+    "stroke": 1,
+    "load_dur_s": 1.60568533,
+    "closure_mm": 6.612804117203641,
+    "eps_rate_nominal": 0.21618733045911298,
+    "peak_kn": 42.91945
+  },
+  {
+    "hit": 7,
+    "stroke": 2,
+    "load_dur_s": 0.10300172100000005,
+    "closure_mm": 0.4532730027648544,
+    "eps_rate_nominal": 0.23100447431216453,
+    "peak_kn": 42.677254
+  },
+  {
+    "hit": 8,
+    "stroke": 1,
+    "load_dur_s": 3.347195554,
+    "closure_mm": 10.267312204084252,
+    "eps_rate_nominal": 0.1610203261818254,
+    "peak_kn": 63.54047
+  },
+  {
+    "hit": 8,
+    "stroke": 2,
+    "load_dur_s": 0.6150988209999992,
+    "closure_mm": 2.965731551816976,
+    "eps_rate_nominal": 0.2530998938292636,
+    "peak_kn": 62.911335
+  },
+  {
+    "hit": 9,
+    "stroke": 1,
+    "load_dur_s": 1.5219891,
+    "closure_mm": 7.316775998700713,
+    "eps_rate_nominal": 0.252355768901754,
+    "peak_kn": 26.250267
+  },
+  {
+    "hit": 9,
+    "stroke": 2,
+    "load_dur_s": 0.0431347630000003,
+    "closure_mm": 0.2174017701760924,
+    "eps_rate_nominal": 0.2645700502270777,
+    "peak_kn": 24.885036
+  },
+  {
+    "hit": 10,
+    "stroke": 1,
+    "load_dur_s": 2.2952639649999997,
+    "closure_mm": 10.504321137729741,
+    "eps_rate_nominal": 0.24023726340298907,
+    "peak_kn": 39.07939
+  },
+  {
+    "hit": 10,
+    "stroke": 2,
+    "load_dur_s": 0.07536999999999994,
+    "closure_mm": 0.33741867567167283,
+    "eps_rate_nominal": 0.2350041984802694,
+    "peak_kn": 37.6207
+  },
+  {
+    "hit": 11,
+    "stroke": 1,
+    "load_dur_s": 1.845397965,
+    "closure_mm": 8.204182822948276,
+    "eps_rate_nominal": 0.23337284052123763,
+    "peak_kn": 33.187695
+  },
+  {
+    "hit": 11,
+    "stroke": 2,
+    "load_dur_s": 0.575906453,
+    "closure_mm": 2.957265648489697,
+    "eps_rate_nominal": 0.26955253080914804,
+    "peak_kn": 30.723074
+  },
+  {
+    "hit": 12,
+    "stroke": 1,
+    "load_dur_s": 1.521885862,
+    "closure_mm": 6.879851290965959,
+    "eps_rate_nominal": 0.23730232234363086,
+    "peak_kn": 30.775759
+  },
+  {
+    "hit": 12,
+    "stroke": 2,
+    "load_dur_s": 0.05536455799999995,
+    "closure_mm": 0.2645154956891762,
+    "eps_rate_nominal": 0.2507981343895051,
+    "peak_kn": 29.694578
+  }
+]
