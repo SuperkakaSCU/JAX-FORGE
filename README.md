@@ -13,6 +13,8 @@ A GPU-accelerated finite element framework for modeling incremental forging proc
 
 This is **version 9** (November 2026): the forging model is corrected and two applications are added (see [What is new in version 9](#what-is-new-in-version-9)).
 
+**Version 9.5** adds `Agility_Forge_physforge_full_fast`, a GPU version of `Agility_Forge_physforge_full` (matrix assembly on the GPU, NVIDIA AMGX and MKL PARDISO linear solvers) that gives the same results, runs the first two hits 6-54 times faster on meshes of 3.6e4-2.7e5 dofs and also handles meshes up to 2e6 dofs on which version 9 stops; it needs the extra solver libraries listed in its README.
+
 ![Agility_Forge, four hits](Agility_Forge/data/af_four_v9.gif)
 
 ## Key Features
